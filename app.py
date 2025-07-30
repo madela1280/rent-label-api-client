@@ -10,7 +10,12 @@ CLIENT_ID = "c4c5125d-7475-4eb1-a4ee-f3deb0788280"
 CLIENT_SECRET = "Zxr8Q~r-2EK64w4t9yejhU6L4QjJO1IrHLfLda0a"
 TENANT_ID = "405ba8a3-73ff-4423-8925-d9eda360cfa7"
 REDIRECT_URI = "https://rent-label-api-client.onrender.com/callback"
-SCOPES = "https://graph.microsoft.com/User.Read https://graph.microsoft.com/Files.ReadWrite.All https://graph.microsoft.com/Sites.ReadWrite.All offline_access"
+SCOPES = (
+    "https://graph.microsoft.com/Files.ReadWrite.All "
+    "https://graph.microsoft.com/Sites.ReadWrite.All "
+    "https://graph.microsoft.com/User.Read "
+    "offline_access"
+)
 
 @app.get("/")
 def root():
