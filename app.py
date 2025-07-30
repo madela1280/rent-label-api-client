@@ -121,3 +121,19 @@ async def callback(request: Request):
 
     return {"access_token": access_token}
 
+@app.get("/excel-info")
+async def get_excel_info(access_token: str):
+    headers = {
+        "Authorization": f"Bearer {access_token}"
+    }
+
+    # 📌 실제 엑셀 경로와 시트명을 반영해서 수정 필요
+    url = "https://graph.microsoft.com/v1.0/me/drive/root:/유축기출고.xlsx:/workbook/worksheets('Sheet1')/range(address='A1:F10')"
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=headers)
+
+    if response.status_code != 200:
+        return {"error": "Excel read failed", "details": response.text}
+
+    return response.json()
