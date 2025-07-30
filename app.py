@@ -13,7 +13,7 @@ REDIRECT_URI = "https://rent-label-api-client.onrender.com/callback"
 SCOPES = "offline_access Files.ReadWrite.All Sites.ReadWrite.All User.Read"
 
 # 엑셀 경로 정보
-SITE_ID = "satmoulab.sharepoint.com,9ec08757-ffff-4a84-96c2-3a1b4fc79bfc,ad99187c-2c91-47a0-8d76-158e07863ed0"
+SITE_ID = "satmoulab.sharepoint.com,102fbb5d-7970-47e4-8686-f6d7fac0375f,cac8f27f-7023-4427-a96f-bd777b42c781"
 DRIVE_ID = "b!rVTxJcW-ZkKM_q9TcyPzi8iBXK6Am9ZOlTVgYb0VaAweA3-HepWdAxpU8fA2KcKM"
 ITEM_ID = "01HZF3Q3OOW6DYFGW5ZRG2JX43PW2WCGMW"  # 유축기출고.xlsx의 itemId
 
