@@ -85,13 +85,21 @@ class ExcelInput(BaseModel):
 
 @app.post("/write-excel")
 async def write_excel(data: ExcelInput):
+    import urllib.parse
+
     headers = {
         "Authorization": f"Bearer {data.access_token}",
         "Content-Type": "application/json"
     }
 
+    SITE_ID = "satmoulab.sharepoint.com,102fbb5d-7970-47e4-8686-f6d7fac0375f,cac8f27f-7023-4427-a96f-bd777b42c781"
+    DRIVE_ID = "b!XbsvEHB55EeGhvbX-sA3X3_yyMojcCdEqW-9d3tCx4HmolOrGKQZQ5AFBiiHgX3t"
     worksheet = "유축기출고"
-    base_url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/items/{ITEM_ID}/workbook"
+
+    file_path = "/출고관리/유축기출고.xlsx"  # 실제 위치에 따라 수정
+    file_path_encoded = urllib.parse.quote(file_path)
+
+    base_url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/root:{file_path_encoded}:/workbook"
 
     async with httpx.AsyncClient() as client:
         # 현재 시트에서 사용된 마지막 줄 확인
