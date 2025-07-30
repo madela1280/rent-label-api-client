@@ -1,14 +1,14 @@
 from fastapi import FastAPI, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, JSONResponse
 import httpx
 import os
 
 app = FastAPI()
 
-# 환경 변수 불러오기
-CLIENT_ID = os.getenv("CLIENT_ID")
-CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-TENANT_ID = os.getenv("TENANT_ID")
+# 🔐 실제 값 직접 입력
+CLIENT_ID = "c4c5125d-7475-4eb1-a4ee-f3deb0788280"
+CLIENT_SECRET = "Zxr8Q~r-2EK64w4t9yejhU6L4QjJO1IrHLfLda0a"
+TENANT_ID = "405ba8a3-73ff-4423-8925-d9eda360cfa7"
 REDIRECT_URI = "https://rent-label-api-client.onrender.com/callback"
 SCOPES = "offline_access Files.ReadWrite.All Sites.ReadWrite.All User.Read"
 
@@ -28,68 +28,8 @@ def login():
         f"&response_mode=query"
         f"&scope={SCOPES}"
     )
-import json
-import urllib.parse
 
-from fastapi.responses import JSONResponse
-import httpx
-
-@app.get("/callback")
-async def callback(request: Request):
-    code = request.query_params.get("code")
-
-    if not code:
-        return JSONResponse(status_code=400, content={"error": "Authorization code not found"})
-
-    token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
-
-    data = {
-        "client_id": CLIENT_ID,
-        "scope": SCOPES,
-        "code": code,
-        "redirect_uri": REDIRECT_URI,
-        "grant_type": "authorization_code",
-        "client_secret": CLIENT_SECRET
-    }
-
-    async with httpx.AsyncClient() as client:
-        response = await client.post(token_url, headers=headers, data=data)
-
-    if response.status_code != 200:
-        return JSONResponse(status_code=500, content={"error": "Token request failed", "details": response.text})
-
-    token_data = response.json()
-    return token_data  # 또는 필요한 항목만 추출해서 반환 가능
-
-@app.get("/excel-info")
-async def get_excel_info(request: Request):
-    access_token = request.query_params.get("access_token")
-
-    if not access_token:
-        return JSONResponse(status_code=400, content={"error": "Access token missing"})
-
-    headers = {
-        "Authorization": f"Bearer {access_token}"
-    }
-
-    # ✅ 여기에 본인의 파일/시트 경로를 정확히 넣으세요 (예시는 임시값)
-    excel_api_url = "https://graph.microsoft.com/v1.0/me/drive/root:/유축기출고.xlsx:/workbook/worksheets('Sheet1')/range(address='A1:F10')"
-
-    async with httpx.AsyncClient() as client:
-        response = await client.get(excel_api_url, headers=headers)
-
-    if response.status_code != 200:
-        return JSONResponse(status_code=500, content={"error": "Excel read failed", "details": response.text})
-
-    return response.json()
-
-from fastapi.responses import JSONResponse
-import httpx
-
+# 🔄 인증 후 콜백 엔드포인트 → Access Token 발급
 @app.get("/callback")
 async def callback(request: Request):
     code = request.query_params.get("code")
@@ -121,13 +61,14 @@ async def callback(request: Request):
 
     return {"access_token": access_token}
 
+# 📥 Excel 데이터 조회 엔드포인트
 @app.get("/excel-info")
 async def get_excel_info(access_token: str):
     headers = {
         "Authorization": f"Bearer {access_token}"
     }
 
-    # 📌 실제 엑셀 경로와 시트명을 반영해서 수정 필요
+    # 정확한 파일명 및 시트명 반영
     url = "https://graph.microsoft.com/v1.0/me/drive/root:/유축기출고.xlsx:/workbook/worksheets('유축기출고')/range(address='A1:F10')"
 
     async with httpx.AsyncClient() as client:
@@ -137,3 +78,4 @@ async def get_excel_info(access_token: str):
         return {"error": "Excel read failed", "details": response.text}
 
     return response.json()
+
