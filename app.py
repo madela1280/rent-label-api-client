@@ -65,3 +65,24 @@ async def callback(request: Request):
     token_data = response.json()
     return token_data  # 또는 필요한 항목만 추출해서 반환 가능
 
+@app.get("/excel-info")
+async def get_excel_info(request: Request):
+    access_token = request.query_params.get("access_token")
+
+    if not access_token:
+        return JSONResponse(status_code=400, content={"error": "Access token missing"})
+
+    headers = {
+        "Authorization": f"Bearer {access_token}"
+    }
+
+    # ✅ 여기에 본인의 파일/시트 경로를 정확히 넣으세요 (예시는 임시값)
+    excel_api_url = "https://graph.microsoft.com/v1.0/me/drive/root:/유축기출고.xlsx:/workbook/worksheets('Sheet1')/range(address='A1:F10')"
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(excel_api_url, headers=headers)
+
+    if response.status_code != 200:
+        return JSONResponse(status_code=500, content={"error": "Excel read failed", "details": response.text})
+
+    return response.json()
