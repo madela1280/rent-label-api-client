@@ -128,7 +128,7 @@ async def get_excel_info(access_token: str):
     }
 
     # 📌 실제 엑셀 경로와 시트명을 반영해서 수정 필요
-    url = "https://graph.microsoft.com/v1.0/me/drive/root:/유축기출고.xlsx:/workbook/worksheets('Sheet1')/range(address='A1:F10')"
+    url = "https://graph.microsoft.com/v1.0/me/drive/root:/유축기출고.xlsx:/workbook/worksheets('유축기출고')/range(address='A1:F10')"
 
     async with httpx.AsyncClient() as client:
         response = await client.get(url, headers=headers)
