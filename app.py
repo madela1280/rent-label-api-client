@@ -86,3 +86,38 @@ async def get_excel_info(request: Request):
         return JSONResponse(status_code=500, content={"error": "Excel read failed", "details": response.text})
 
     return response.json()
+
+from fastapi.responses import JSONResponse
+import httpx
+
+@app.get("/callback")
+async def callback(request: Request):
+    code = request.query_params.get("code")
+    if not code:
+        return JSONResponse(status_code=400, content={"error": "Authorization code missing"})
+
+    token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+    data = {
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "code": code,
+        "grant_type": "authorization_code",
+        "redirect_uri": REDIRECT_URI,
+        "scope": SCOPES,
+    }
+
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+
+    async with httpx.AsyncClient() as client:
+        token_response = await client.post(token_url, data=data, headers=headers)
+
+    if token_response.status_code != 200:
+        return JSONResponse(status_code=500, content={"error": "Token exchange failed", "details": token_response.text})
+
+    token_data = token_response.json()
+    access_token = token_data.get("access_token")
+
+    return {"access_token": access_token}
+
