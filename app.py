@@ -1,23 +1,22 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse, JSONResponse
-import os
 import httpx
 
 app = FastAPI()
 
-# 환경 변수 불러오기
-CLIENT_ID = os.getenv("CLIENT_ID")
-CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-TENANT_ID = os.getenv("TENANT_ID")
+# 🔐 하드코딩된 인증 정보
+CLIENT_ID = "c4c5125d-7475-4eb1-a4ee-f3deb0788280"
+CLIENT_SECRET = "Zxr8Q~r-2EK64w4t9yejhU6L4QjJO1IrHLfLda0a"
+TENANT_ID = "405ba8a3-73ff-4423-8925-d9eda360cfa7"
 REDIRECT_URI = "https://rent-label-api-client.onrender.com/callback"
-SCOPES = "offline_access Files.ReadWrite.All Sites.ReadWrite.All User.Read"
+SCOPES = "https://graph.microsoft.com/.default"
 
-# ✅ 기본 확인용 루트
+# 🔍 서버 동작 확인용 루트
 @app.get("/")
 def root():
     return {"message": "rent-label-api-client is running"}
 
-# 🔐 Microsoft 로그인 유도
+# 🔗 로그인 유도 URL 생성
 @app.get("/login")
 def login():
     return RedirectResponse(
@@ -29,7 +28,7 @@ def login():
         f"&scope={SCOPES}"
     )
 
-# 🔑 인증 코드로 액세스 토큰 교환
+# 🔁 콜백 처리: 인증 코드 → 토큰
 @app.get("/callback")
 async def callback(request: Request):
     code = request.query_params.get("code")
@@ -37,7 +36,6 @@ async def callback(request: Request):
         return JSONResponse(status_code=400, content={"error": "Authorization code missing"})
 
     token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
     data = {
         "client_id": CLIENT_ID,
         "client_secret": CLIENT_SECRET,
@@ -47,17 +45,22 @@ async def callback(request: Request):
         "scope": SCOPES,
     }
 
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+
     async with httpx.AsyncClient() as client:
-        token_response = await client.post(token_url, headers=headers, data=data)
+        token_response = await client.post(token_url, data=data, headers=headers)
 
     if token_response.status_code != 200:
         return JSONResponse(status_code=500, content={"error": "Token exchange failed", "details": token_response.text})
 
     token_data = token_response.json()
     access_token = token_data.get("access_token")
+
     return {"access_token": access_token}
 
-# 📊 엑셀 조회 엔드포인트
+# 📊 Excel 정보 조회
 @app.get("/excel-info")
 async def get_excel_info(access_token: str):
     headers = {
