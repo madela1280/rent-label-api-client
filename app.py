@@ -64,7 +64,7 @@ async def get_excel_info(access_token: str):
         "Authorization": f"Bearer {access_token}"
     }
 
-    url = "https://graph.microsoft.com/v1.0/me/drive/root:/유축기출고.xlsx:/workbook/worksheets('유축기출고')/range(address='A1:F100')"
+    url = "https://graph.microsoft.com/v1.0/sites/{site-id}/drives/{drive-id}/root:/Shared Documents/유축기출고.xlsx:/workbook/worksheets('유축기출고')/range(address='A1:F10')"
 
     async with httpx.AsyncClient() as client:
         response = await client.get(url, headers=headers)
