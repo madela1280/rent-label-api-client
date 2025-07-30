@@ -90,25 +90,39 @@ async def write_excel(data: ExcelInput):
         "Content-Type": "application/json"
     }
 
-    # 테이블 생성 (없을 경우 대비)
-    table_create_url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/items/{ITEM_ID}/workbook/tables/add"
-    async with httpx.AsyncClient() as client:
-        await client.post(table_create_url, headers=headers, json={
-            "address": "A1:F1",
-            "hasHeaders": True
-        })
+    worksheet = "유축기출고"
+    base_url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/items/{ITEM_ID}/workbook"
 
-    # 행 추가
-    row_add_url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/items/{ITEM_ID}/workbook/tables('Table1')/rows/add"
     async with httpx.AsyncClient() as client:
-        response = await client.post(row_add_url, headers=headers, json={
+        # 현재 시트에서 사용된 마지막 줄 확인
+        used_range_url = f"{base_url}/worksheets('{worksheet}')/usedRange"
+        used_range_res = await client.get(used_range_url, headers=headers)
+        used_data = used_range_res.json()
+
+        if "address" not in used_data:
+            return {"error": "Unable to detect used range", "details": used_data}
+
+        # 예: address = '유축기출고!A1:F3'
+        last_row = int(used_data["address"].split("!")[1].split(":")[1][1:])  # "F3" → 3
+        next_row = last_row + 1  # 다음 줄
+
+        # 다음 줄 범위에 값 추가
+        target_range = f"A{next_row}:F{next_row}"
+        range_url = f"{base_url}/worksheets('{worksheet}')/range(address='{target_range}')"
+
+        response = await client.patch(range_url, headers=headers, json={
             "values": [data.row]
         })
 
-    if response.status_code != 201:
+    if response.status_code != 200:
         return {"error": "Failed to write to Excel", "details": response.text}
 
-    return {"status": "success", "written_row": data.row}
+    return {
+        "status": "success",
+        "written_row": data.row,
+        "written_range": target_range
+    }
+
 
 
 
