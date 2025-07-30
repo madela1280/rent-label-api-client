@@ -28,4 +28,40 @@ def login():
         f"&response_mode=query"
         f"&scope={SCOPES}"
     )
+import json
+import urllib.parse
+
+from fastapi.responses import JSONResponse
+import httpx
+
+@app.get("/callback")
+async def callback(request: Request):
+    code = request.query_params.get("code")
+
+    if not code:
+        return JSONResponse(status_code=400, content={"error": "Authorization code not found"})
+
+    token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+
+    data = {
+        "client_id": CLIENT_ID,
+        "scope": SCOPES,
+        "code": code,
+        "redirect_uri": REDIRECT_URI,
+        "grant_type": "authorization_code",
+        "client_secret": CLIENT_SECRET
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(token_url, headers=headers, data=data)
+
+    if response.status_code != 200:
+        return JSONResponse(status_code=500, content={"error": "Token request failed", "details": response.text})
+
+    token_data = response.json()
+    return token_data  # 또는 필요한 항목만 추출해서 반환 가능
 
