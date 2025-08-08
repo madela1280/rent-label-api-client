@@ -5,8 +5,8 @@ services:
     plan: free
     rootDir: Desktop/rent-label-api-client
     buildCommand: |
-      apt-get update
-      apt-get install -y tesseract-ocr tesseract-ocr-kor tesseract-ocr-eng
+      apt-get update && apt-get install -y tesseract-ocr tesseract-ocr-kor tesseract-ocr-eng
+      which tesseract
       tesseract --version
       pip install --upgrade pip
       pip install -r requirements.txt
