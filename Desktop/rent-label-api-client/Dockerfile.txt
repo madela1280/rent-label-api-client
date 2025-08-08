@@ -1,0 +1,17 @@
+# Python 3.11 slim 버전 사용
+FROM python:3.11-slim
+
+# 컨테이너 내 작업 디렉토리 설정
+WORKDIR /app
+
+# 로컬 파일 전체 복사
+COPY . /app
+
+# pip 최신화 및 Poetry 설치
+RUN pip install --upgrade pip && pip install poetry
+
+# Poetry를 사용해 의존성 설치
+RUN poetry config virtualenvs.create false && poetry install --no-root --no-dev
+
+# 컨테이너 실행 시 FastAPI 서버 구동
+CMD ["poetry", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
