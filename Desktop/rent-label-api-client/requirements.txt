@@ -3,9 +3,5 @@ uvicorn
 python-multipart
 httpx
 Pillow
+pytesseract
 openpyxl
-easyocr
-torch
-torchvision
-opencv-python-headless
-

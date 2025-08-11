@@ -1,30 +1,27 @@
 from PIL import Image
-import easyocr
+import pytesseract
 import re
 from datetime import datetime
 
-reader = easyocr.Reader(['ko', 'en'], gpu=False)
-
 def extract_shipping_info(image_path):
-    image = Image.open(image_path).convert("RGB")
-    results = reader.readtext(image_path, detail=0, paragraph=True)
-    text = "\n".join(results)
+    image = Image.open(image_path)
+    text = pytesseract.image_to_string(image, lang='kor+eng')
 
     name = None
     phone = None
     address = None
     invoice = None
 
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    lines = text.splitlines()
     for i, line in enumerate(lines):
         if not phone:
-            m = re.search(r'01[016789][- ]?\d{3,4}[- ]?\d{4}', line)
+            m = re.search(r'01[016789][-\s]?\d{3,4}[-\s]?\d{4}', line)
             if m:
                 phone = m.group().replace(' ', '').replace('--', '-')
                 name = lines[i-1].strip() if i > 0 else None
                 address = lines[i+1].strip() if i+1 < len(lines) else None
         if not invoice:
-            m = re.search(r'\b\d{4}-?\d{4}-?\d{4}\b', line)
+            m = re.search(r'\b\d{4}[-]?\d{4}[-]?\d{4}\b', line)
             if m:
                 invoice = m.group().replace('-', '')
 
@@ -42,10 +39,7 @@ def parse_qr_text(qr_text):
         "FR":"프리스타일","SP":"스펙트라","GS":"각시밀","CM":"시밀레",
     }
     prefix = (qr_text or "")[:2]
-    return {
-        "기종": code_map.get(prefix, "알 수 없음"),
-        "기기번호": (qr_text or "")[2:]
-    }
+    return {"기종": code_map.get(prefix, "알 수 없음"), "기기번호": (qr_text or "")[2:]}
 
 def make_final_entry(qr_text, 송장_image_path):
     qr_data = parse_qr_text(qr_text)
@@ -59,3 +53,4 @@ def make_final_entry(qr_text, 송장_image_path):
         "기종": qr_data["기종"],
         "송장번호": 송장_data["송장번호"],
     }
+
