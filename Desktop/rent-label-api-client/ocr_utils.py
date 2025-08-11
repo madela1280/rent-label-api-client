@@ -1,54 +1,55 @@
 from PIL import Image
-import pytesseract
+import easyocr
 import re
 from datetime import datetime
 
+reader = easyocr.Reader(['ko', 'en'], gpu=False)
+
 def extract_shipping_info(image_path):
-    image = Image.open(image_path)
-    text = pytesseract.image_to_string(image, lang='kor+eng')
+    image = Image.open(image_path).convert("RGB")
+    results = reader.readtext(image_path, detail=0, paragraph=True)
+    text = "\n".join(results)
 
     name = None
     phone = None
     address = None
     invoice = None
 
-    lines = text.splitlines()
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     for i, line in enumerate(lines):
         if not phone:
-            phone_match = re.search(r'010[-\s]?\d{3,4}[-\s]?\d{4}', line)
-            if phone_match:
-                phone = phone_match.group().replace(' ', '').replace('--', '-')
-                name = lines[i - 1].strip() if i > 0 else None
-                address = lines[i + 1].strip() if i + 1 < len(lines) else None
-
+            m = re.search(r'01[016789][- ]?\d{3,4}[- ]?\d{4}', line)
+            if m:
+                phone = m.group().replace(' ', '').replace('--', '-')
+                name = lines[i-1].strip() if i > 0 else None
+                address = lines[i+1].strip() if i+1 < len(lines) else None
         if not invoice:
-            invoice_match = re.search(r'\b\d{4}[-]?\d{4}[-]?\d{4}\b', line)
-            if invoice_match:
-                invoice = invoice_match.group().replace('-', '')
+            m = re.search(r'\b\d{4}-?\d{4}-?\d{4}\b', line)
+            if m:
+                invoice = m.group().replace('-', '')
 
     return {
         "수취인명": name or "",
         "전화번호": phone or "",
         "주소": address or "",
         "송장번호": invoice or "",
-        "출고일": datetime.now().strftime("%Y-%m-%d")
+        "출고일": datetime.now().strftime("%Y-%m-%d"),
     }
 
 def parse_qr_text(qr_text):
     code_map = {
-        "SM": "심포니", "LT": "락티나", "SW": "스윙", "MX": "스윙맥스",
-        "FR": "프리스타일", "SP": "스펙트라", "GS": "각시밀", "CM": "시밀레",
+        "SM":"심포니","LT":"락티나","SW":"스윙","MX":"스윙맥스",
+        "FR":"프리스타일","SP":"스펙트라","GS":"각시밀","CM":"시밀레",
     }
-    prefix = qr_text[:2]
+    prefix = (qr_text or "")[:2]
     return {
         "기종": code_map.get(prefix, "알 수 없음"),
-        "기기번호": qr_text[2:]
+        "기기번호": (qr_text or "")[2:]
     }
 
 def make_final_entry(qr_text, 송장_image_path):
     qr_data = parse_qr_text(qr_text)
     송장_data = extract_shipping_info(송장_image_path)
-
     return {
         "출고일": 송장_data["출고일"],
         "대여자명": 송장_data["수취인명"],
