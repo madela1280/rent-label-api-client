@@ -4,7 +4,7 @@ from pydantic import BaseModel
 import httpx
 import urllib.parse
 
-from fastapi import UploadFile, Form
+from fastapi import UploadFile, Form, File
 import shutil, os
 
 from ocr_utils import make_final_entry
@@ -13,7 +13,7 @@ from excel_utils import append_row_to_excel
 app = FastAPI()  # ✅ FastAPI 객체 먼저 생성
 
 @app.post("/upload-test-image/")
-async def upload_test_image(image: UploadFile = Form(...)):
+async def upload_test_image(image: UploadFile = File(...)):
     temp_path = f"temp_{image.filename}"
     with open(temp_path, "wb") as buffer:
         shutil.copyfileobj(image.file, buffer)
@@ -123,8 +123,10 @@ async def write_excel(data: ExcelInput):
         "range": target_range
     }
 
+from fastapi import File
+
 @app.post("/process-ocr/")
-async def process_ocr(qr_text: str = Form(...), image: UploadFile = Form(...)):
+async def process_ocr(qr_text: str = Form(...), image: UploadFile = File(...)):
     temp_path = f"temp_{image.filename}"
     with open(temp_path, "wb") as buffer:
         shutil.copyfileobj(image.file, buffer)
