@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+python-multipart
+httpx
+Pillow
+pytesseract
+openpyxl
+notepad requirements.txt
+python-dotenv
