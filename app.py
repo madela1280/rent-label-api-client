@@ -35,9 +35,9 @@ REDIRECT_URI = os.getenv("REDIRECT_URI", "https://rent-label-api-client-docker.o
 
 # ✅ OIDC + Graph 권장 스코프 (로그인 식별을 위해 openid/profile/email은 필수로 넣자)
 SCOPES = [
-    "openid", "profile", "email", "offline_access",
     "User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All"
 ]
+
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 
 GRAPH = "https://graph.microsoft.com/v1.0"
@@ -64,12 +64,13 @@ def login(request: Request):
 
     # ✅ 실제 authorize URL을 얻어 로그/디버그에 활용
     auth_url = _build_msal_app().get_authorization_request_url(
-        scopes=SCOPES,
-        state=request.session["state"],
-        redirect_uri=REDIRECT_URI,
-        prompt="select_account",
-        response_mode="query",
-    )
+    scopes=["User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All"],
+    state=request.session["state"],
+    redirect_uri=REDIRECT_URI,
+    prompt="select_account",
+    response_mode="query",
+)
+
     sep = "&" if "?" in auth_url else "?"
     return RedirectResponse(f"{auth_url}{sep}nonce={nonce}")
 
