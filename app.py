@@ -158,5 +158,18 @@ def ping(): return {"ping": str(uuid4())}
 def root():
     return {"message": "probe1"}
 
+# 콜백 경로 변형까지 모두 수용
+@app.get("/callback/")
+async def callback_slash(request: Request):
+    return await callback(request)
+
+@app.get("/login/callback")
+async def callback_login_path(request: Request):
+    return await callback(request)
+
+@app.get("/login/callback/")
+async def callback_login_path_slash(request: Request):
+    return await callback(request)
+
 
 
