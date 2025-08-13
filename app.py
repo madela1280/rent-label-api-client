@@ -27,10 +27,12 @@ app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "ch
 # -------------------------------
 # ENV & Constants
 # -------------------------------
-CLIENT_ID = os.getenv("CLIENT_ID")
-TENANT_ID = os.getenv("TENANT_ID")
-CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-REDIRECT_URI = os.getenv("REDIRECT_URI", "https://rent-label-api-client-docker.onrender.com/callback")
+# 🔒 과거 값 개입 방지: 하드 고정 (환경변수 무시)
+CLIENT_ID = "41745db3-a5c5-4e6e-acd7-fc4ce18b1999"
+TENANT_ID = "405ba8a3-73ff-4423-8925-d9eda360cfa7"
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")  # 시크릿만 env에서 읽음
+REDIRECT_URI = "https://rent-label-api-client-docker.onrender.com/callback"
+
 SCOPES = ["offline_access", "Files.ReadWrite.All", "Sites.ReadWrite.All", "User.Read"]
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 
@@ -79,13 +81,18 @@ async def upload_test_image(image: UploadFile = File(...)):
 @app.get("/login")
 def login(request: Request):
     request.session["state"] = str(uuid.uuid4())
+    nonce = str(uuid.uuid4())  # 캐시/이전값 방지
     auth_url = _build_msal_app().get_authorization_request_url(
         scopes=SCOPES,
         state=request.session["state"],
         redirect_uri=REDIRECT_URI,
-        prompt="select_account"
+        prompt="select_account",
+        # 불필요한 과거 client_id가 끼어들 여지 제거
+        # (msal은 여기서 client_id를 내부 설정(CLIENT_ID)로 사용)
     )
-    return RedirectResponse(auth_url)
+    # 캐시 무효화를 위해 쿼리에 nonce 부착
+    sep = "&" if "?" in auth_url else "?"
+    return RedirectResponse(f"{auth_url}{sep}nonce={nonce}")
 
 # -------------------------------
 # 콜백 (인증 코드 → 토큰 교환)
