@@ -27,7 +27,7 @@ app.add_middleware(
     SessionMiddleware,
     secret_key=os.getenv("SESSION_SECRET", "change-me"),
     same_site="lax",
-    https_only=True,
+    https_only=False,  # HTTP에서도 쿠키 유지
     max_age=3600,
     session_cookie="session"
 )
