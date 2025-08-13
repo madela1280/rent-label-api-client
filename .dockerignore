@@ -1,0 +1,15 @@
+# 파이썬 캐시/가상환경
+__pycache__/
+*.pyc
+venv/
+
+# 중복/작업용 폴더
+Desktop/
+**/Desktop/
+**/rent-label-api-client/**  # 중첩된 동일 프로젝트 폴더가 또 있으면 제외
+
+# 개발 도구/기타
+.git/
+.gitignore
+.env
+.DS_Store

@@ -22,7 +22,15 @@ from excel_utils import append_row_to_excel
 # FastAPI & Session
 # -------------------------------
 app = FastAPI()
-app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "change-me"))
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.getenv("SESSION_SECRET", "change-me"),
+    same_site="lax",
+    https_only=True,
+    max_age=3600,
+    session_cookie="session"
+)
 
 # -------------------------------
 # ENV & Constants
