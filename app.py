@@ -27,25 +27,27 @@ app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "ch
 # -------------------------------
 # ENV & Constants
 # -------------------------------
-# 🔒 과거 값 개입 방지: 하드 고정 (환경변수 무시)
-CLIENT_ID = "41745db3-a5c5-4e6e-acd7-fc4ce18b1999"
-TENANT_ID = "405ba8a3-73ff-4423-8925-d9eda360cfa7"
-CLIENT_SECRET = os.getenv("CLIENT_SECRET")  # 시크릿만 env에서 읽음
-REDIRECT_URI = "https://rent-label-api-client-docker.onrender.com/callback"
+# ✅ 과거 값 개입 차단: 기본값은 하드코딩하되, 필요 시 환경변수로 덮어쓸 수 있게(운영이 유연해짐)
+CLIENT_ID = os.getenv("CLIENT_ID", "41745db3-a5c5-4e6e-acd7-fc4ce18b1999")
+TENANT_ID = os.getenv("TENANT_ID", "405ba8a3-73ff-4423-8925-d9eda360cfa7")  # GUID 또는 yourtenant.onmicrosoft.com
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")  # 반드시 설정 필요
+REDIRECT_URI = os.getenv("REDIRECT_URI", "https://rent-label-api-client-docker.onrender.com/callback")
 
-SCOPES = ["offline_access", "Files.ReadWrite.All", "Sites.ReadWrite.All", "User.Read"]
+# ✅ OIDC + Graph 권장 스코프 (로그인 식별을 위해 openid/profile/email은 필수로 넣자)
+SCOPES = [
+    "openid", "profile", "email", "offline_access",
+    "User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All"
+]
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 
-# Excel/Graph 관련
-FILE_NAME = os.getenv("FILE_NAME", "유축기출고.xlsx")
-WORKSHEET_NAME = os.getenv("WORKSHEET_NAME", "유축기출고")
-ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")  # /onedrive/ping 용(선택)
 GRAPH = "https://graph.microsoft.com/v1.0"
 
 # -------------------------------
 # MSAL App 생성
 # -------------------------------
 def _build_msal_app():
+    if not CLIENT_SECRET:
+        raise RuntimeError("CLIENT_SECRET env is missing.")
     return msal.ConfidentialClientApplication(
         CLIENT_ID,
         authority=AUTHORITY,
@@ -53,44 +55,21 @@ def _build_msal_app():
     )
 
 # -------------------------------
-# 기본/상태
-# -------------------------------
-@app.get("/")
-def root():
-    return {"message": "✅ rent-label-api-client is running"}
-
-# -------------------------------
-# 테스트 이미지 업로드 → OCR → 엑셀 반영
-# -------------------------------
-@app.post("/upload-test-image/")
-async def upload_test_image(image: UploadFile = File(...)):
-    temp_path = f"temp_{image.filename}"
-    with open(temp_path, "wb") as buffer:
-        shutil.copyfileobj(image.file, buffer)
-    try:
-        result = make_final_entry("TEST_QR", temp_path)
-        append_row_to_excel(result)
-        return {"status": "success", "data": result}
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-
-# -------------------------------
 # 로그인 (Azure OAuth2 - MSAL)
 # -------------------------------
 @app.get("/login")
 def login(request: Request):
     request.session["state"] = str(uuid.uuid4())
-    nonce = str(uuid.uuid4())  # 캐시/이전값 방지
+    nonce = str(uuid.uuid4())
+
+    # ✅ 실제 authorize URL을 얻어 로그/디버그에 활용
     auth_url = _build_msal_app().get_authorization_request_url(
         scopes=SCOPES,
         state=request.session["state"],
         redirect_uri=REDIRECT_URI,
         prompt="select_account",
-        # 불필요한 과거 client_id가 끼어들 여지 제거
-        # (msal은 여기서 client_id를 내부 설정(CLIENT_ID)로 사용)
+        response_mode="query",
     )
-    # 캐시 무효화를 위해 쿼리에 nonce 부착
     sep = "&" if "?" in auth_url else "?"
     return RedirectResponse(f"{auth_url}{sep}nonce={nonce}")
 
@@ -112,17 +91,16 @@ async def callback(request: Request):
         redirect_uri=REDIRECT_URI,
     )
 
+    # ✅ 토큰 실패 시 상세 에러를 그대로 반환해 ‘무한 추측’ 방지
     if "access_token" not in result:
         return JSONResponse({"error": "Token acquire failed", "details": result}, status_code=400)
 
-    # refresh_token 저장 (서버 로컬 파일)
     try:
         with open("refresh_token.txt", "w", encoding="utf-8") as f:
             f.write(result.get("refresh_token", ""))
     except Exception:
         pass
 
-    # 세션 저장
     request.session["tokens"] = {
         "access_token": result["access_token"],
         "refresh_token": result.get("refresh_token"),
@@ -132,96 +110,7 @@ async def callback(request: Request):
 
     return RedirectResponse("/me")
 
-@app.get("/me")
-def me(request: Request):
-    tokens = request.session.get("tokens")
-    if not tokens:
-        return RedirectResponse("/login")
-    return JSONResponse({"status": "ok", "id_token_claims": tokens.get("id_token_claims")})
-
-# -------------------------------
-# 임의로 엑셀 특정 행에 쓰는 API (토큰 직접 전달)
-# -------------------------------
-class ExcelInput(BaseModel):
-    access_token: str
-    row: list  # 예: ["2025-07-30", "홍길동", "010-1234-5678", "주소", "유축기기종", "기기번호", "송장번호"]
-
-@app.post("/write-excel")
-async def write_excel(data: ExcelInput):
-    headers = {
-        "Authorization": f"Bearer {data.access_token}",
-        "Content-Type": "application/json",
-    }
-    encoded_path = urllib.parse.quote(f"/{FILE_NAME}")
-    base_url = f"{GRAPH}/me/drive/root:{encoded_path}:/workbook/worksheets('{WORKSHEET_NAME}')"
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            used_range_url = f"{base_url}/usedRange"
-            used_res = await client.get(used_range_url, headers=headers)
-            used_data = used_res.json()
-
-            if "address" not in used_data:
-                return {"error": "Unable to detect used range", "details": used_data}
-
-            address = used_data["address"]
-            last_row = int(address.split("!")[1].split(":")[1][1:])
-            next_row = last_row + 1
-            target_range = f"A{next_row}:G{next_row}"
-
-            range_url = f"{base_url}/range(address='{target_range}')"
-            response = await client.patch(range_url, headers=headers, json={"values": [data.row]})
-
-            if response.status_code != 200:
-                return {"error": "Failed to write to Excel", "details": response.text}
-    except Exception as e:
-        return {"error": "Internal Server Error", "details": str(e)}
-    return {"status": "success", "row": data.row, "range": target_range}
-
-# -------------------------------
-# OCR → 엑셀 반영 (실사용 라우트)
-# -------------------------------
-@app.post("/process-ocr/")
-async def process_ocr(qr_text: str = Form(...), image: UploadFile = File(...)):
-    temp_path = f"temp_{image.filename}"
-    with open(temp_path, "wb") as buffer:
-        shutil.copyfileobj(image.file, buffer)
-    try:
-        result = make_final_entry(qr_text, temp_path)
-        append_row_to_excel(result)
-        return {"status": "success", "data": result}
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-
-# -------------------------------
-# 원드라이브 파일 존재 Ping (선택)
-# -------------------------------
-def _auth():
-    return {"Authorization": f"Bearer {ACCESS_TOKEN}"} if ACCESS_TOKEN else {}
-
-@app.get("/onedrive/ping")
-def onedrive_ping():
-    if not ACCESS_TOKEN:
-        return {"error": "ACCESS_TOKEN env not set"}
-    try:
-        r = requests.get(f"{GRAPH}/me/drive/root:/{FILE_NAME}", headers=_auth())
-        return {"status": r.status_code, "json": r.json()}
-    except Exception as e:
-        return {"error": str(e)}
-
-# -------------------------------
-# DEBUG: Azure 환경 확인
-# -------------------------------
-@app.get("/__debug/secret")
-def dbg_secret():
-    from hashlib import sha256
-    sec = os.getenv("CLIENT_SECRET") or ""
-    return {
-        "length": len(sec),
-        "sha256_fp": sha256(sec.encode()).hexdigest()[:16]
-    }
-
-# === 진단용: 런타임 Azure 설정/로그인 URL 확인 ===
+# === 진단용: 런타임 Azure 설정/로그인 URL 확인 (강화) ===
 from hashlib import sha256
 from fastapi.responses import PlainTextResponse
 
@@ -233,17 +122,40 @@ def dbg_azure():
         "tenant_id": TENANT_ID,
         "authority": AUTHORITY,
         "redirect_uri": REDIRECT_URI,
+        "scopes": SCOPES,
         "secret_len": len(sec),
         "secret_fp": sha256(sec.encode()).hexdigest()[:12],
     }
 
 @app.get("/login-url", response_class=PlainTextResponse)
 def login_url():
-    # MSAL이 실제로 만드는 authorize URL 그대로 문자열로만 반환
     url = _build_msal_app().get_authorization_request_url(
-        scopes=SCOPES, state="debug", redirect_uri=REDIRECT_URI, prompt="select_account"
+        scopes=SCOPES, state="debug", redirect_uri=REDIRECT_URI, prompt="select_account", response_mode="query"
     )
     return url
+
+# ✅ 추가: 토큰으로 실제 테넌트/사용자 확인 (누가/어느 디렉터리인지 1방에 증명)
+@app.get("/whoami")
+def whoami(request: Request):
+    tokens = request.session.get("tokens")
+    if not tokens:
+        return RedirectResponse("/login")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    try:
+        me = requests.get(f"{GRAPH}/me", headers=headers).json()
+        org = requests.get(f"{GRAPH}/organization", headers=headers).json()
+        return {"me": me, "organization": org}
+    except Exception as e:
+        return {"error": str(e)}
+
+from uuid import uuid4
+
+@app.get("/__ping")
+def ping(): return {"ping": str(uuid4())}
+
+@app.get("/")
+def root():
+    return {"message": "probe1"}
 
 
 
