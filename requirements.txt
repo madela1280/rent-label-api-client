@@ -1,14 +1,11 @@
-FROM python:3.10-slim
+fastapi
+uvicorn[standard]
+python-multipart
+httpx
+Pillow
+pytesseract
+openpyxl
+python-dotenv
+msal
+itsdangerous==2.2.0
 
-WORKDIR /app
-
-# 1) 의존성만 먼저 복사→설치 (캐시 활용)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# 2) 그 다음에 앱 소스 복사
-COPY . .
-
-# 3) 앱 실행
-ENV PORT=8000
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
