@@ -7,3 +7,4 @@ pytesseract
 openpyxl
 python-dotenv
 msal
+itsdangerous==2.2.0
