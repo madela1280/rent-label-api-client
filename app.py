@@ -179,5 +179,13 @@ async def callback_login_path(request: Request):
 async def callback_login_path_slash(request: Request):
     return await callback(request)
 
+@app.get("/me")
+def me(request: Request):
+    tokens = request.session.get("tokens")
+    if not tokens:
+        return RedirectResponse("/login")
+    return JSONResponse({"status": "ok", "id_token_claims": tokens.get("id_token_claims")})
+
+
 
 
