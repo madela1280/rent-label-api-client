@@ -212,15 +212,13 @@ def onedrive_ping():
 # -------------------------------
 # DEBUG: Azure 환경 확인
 # -------------------------------
-@app.get("/__debug/azure")
-def dbg():
+@app.get("/__debug/secret")
+def dbg_secret():
+    from hashlib import sha256
+    sec = os.getenv("CLIENT_SECRET") or ""
     return {
-        "client_id": CLIENT_ID,
-        "tenant_id": TENANT_ID,
-        "secret_len": len(CLIENT_SECRET) if CLIENT_SECRET else 0,
-        "secret_fp": hashlib.sha256((CLIENT_SECRET or '').encode()).hexdigest()[:12],
-        "file_name": FILE_NAME,
-        "worksheet": WORKSHEET_NAME,
+        "length": len(sec),
+        "sha256_fp": sha256(sec.encode()).hexdigest()[:16]
     }
 
 
