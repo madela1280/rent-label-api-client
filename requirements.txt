@@ -1,9 +1,9 @@
 fastapi
-uvicorn
+uvicorn[standard]
 python-multipart
 httpx
 Pillow
 pytesseract
 openpyxl
-notepad requirements.txt
 python-dotenv
+msal

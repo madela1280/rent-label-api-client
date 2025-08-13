@@ -2,23 +2,27 @@ import os
 import shutil
 import hashlib
 import urllib.parse
+import uuid
 
 from dotenv import load_dotenv; load_dotenv()
 
 from fastapi import FastAPI, Request, UploadFile, Form, File
 from fastapi.responses import RedirectResponse, JSONResponse
 from pydantic import BaseModel
+from starlette.middleware.sessions import SessionMiddleware
 
 import httpx
 import requests
+import msal
 
 from ocr_utils import make_final_entry
 from excel_utils import append_row_to_excel
 
 # -------------------------------
-# FastAPI
+# FastAPI & Session
 # -------------------------------
 app = FastAPI()
+app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "change-me"))
 
 # -------------------------------
 # ENV & Constants
@@ -26,17 +30,25 @@ app = FastAPI()
 CLIENT_ID = os.getenv("CLIENT_ID")
 TENANT_ID = os.getenv("TENANT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+REDIRECT_URI = os.getenv("REDIRECT_URI", "https://rent-label-api-client-docker.onrender.com/callback")
+SCOPES = ["offline_access", "Files.ReadWrite.All", "Sites.ReadWrite.All", "User.Read"]
+AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 
 # Excel/Graph 관련
 FILE_NAME = os.getenv("FILE_NAME", "유축기출고.xlsx")
 WORKSHEET_NAME = os.getenv("WORKSHEET_NAME", "유축기출고")
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")  # /onedrive/ping 용(선택)
-
-# OAuth/Graph
-REDIRECT_URI = "https://rent-label-api-client-docker.onrender.com/callback"
-SCOPES = "offline_access Files.ReadWrite.All Sites.ReadWrite.All User.Read"
 GRAPH = "https://graph.microsoft.com/v1.0"
 
+# -------------------------------
+# MSAL App 생성
+# -------------------------------
+def _build_msal_app():
+    return msal.ConfidentialClientApplication(
+        CLIENT_ID,
+        authority=AUTHORITY,
+        client_credential=CLIENT_SECRET,
+    )
 
 # -------------------------------
 # 기본/상태
@@ -44,7 +56,6 @@ GRAPH = "https://graph.microsoft.com/v1.0"
 @app.get("/")
 def root():
     return {"message": "✅ rent-label-api-client is running"}
-
 
 # -------------------------------
 # 테스트 이미지 업로드 → OCR → 엑셀 반영
@@ -62,78 +73,71 @@ async def upload_test_image(image: UploadFile = File(...)):
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
-
 # -------------------------------
-# 로그인 (Azure OAuth2)
+# 로그인 (Azure OAuth2 - MSAL)
 # -------------------------------
 @app.get("/login")
-def login():
-    url = (
-        f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/authorize"
-        f"?client_id={CLIENT_ID}"
-        f"&response_type=code"
-        f"&redirect_uri={urllib.parse.quote(REDIRECT_URI)}"
-        f"&response_mode=query"
-        f"&scope={SCOPES}"
+def login(request: Request):
+    request.session["state"] = str(uuid.uuid4())
+    auth_url = _build_msal_app().get_authorization_request_url(
+        scopes=SCOPES,
+        state=request.session["state"],
+        redirect_uri=REDIRECT_URI,
+        prompt="select_account"
     )
-    return RedirectResponse(url)
-
+    return RedirectResponse(auth_url)
 
 # -------------------------------
 # 콜백 (인증 코드 → 토큰 교환)
 # -------------------------------
 @app.get("/callback")
 async def callback(request: Request):
+    if request.query_params.get("state") != request.session.get("state"):
+        return JSONResponse({"error": "state mismatch"}, status_code=400)
+
     code = request.query_params.get("code")
     if not code:
         return JSONResponse(status_code=400, content={"error": "Authorization code missing"})
 
-    token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-    data = {
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "code": code,
-        "grant_type": "authorization_code",
-        "redirect_uri": REDIRECT_URI,
-        "scope": SCOPES,
-    }
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    result = _build_msal_app().acquire_token_by_authorization_code(
+        code,
+        scopes=SCOPES,
+        redirect_uri=REDIRECT_URI,
+    )
 
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        token_response = await client.post(token_url, data=data, headers=headers)
-
-    if token_response.status_code != 200:
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Token exchange failed", "details": token_response.text},
-        )
-
-    tok = token_response.json()
+    if "access_token" not in result:
+        return JSONResponse({"error": "Token acquire failed", "details": result}, status_code=400)
 
     # refresh_token 저장 (서버 로컬 파일)
     try:
         with open("refresh_token.txt", "w", encoding="utf-8") as f:
-            f.write(tok.get("refresh_token", ""))
-    except Exception as e:
-        # 저장 실패해도 토큰은 응답으로 줌
+            f.write(result.get("refresh_token", ""))
+    except Exception:
         pass
 
-    return {
-        "access_token": tok.get("access_token"),
-        "refresh_token": tok.get("refresh_token"),
-        "expires_in": tok.get("expires_in"),
-        "message": "refresh_token 저장 완료",
+    # 세션 저장
+    request.session["tokens"] = {
+        "access_token": result["access_token"],
+        "refresh_token": result.get("refresh_token"),
+        "expires_in": result.get("expires_in"),
+        "id_token_claims": result.get("id_token_claims"),
     }
 
+    return RedirectResponse("/me")
+
+@app.get("/me")
+def me(request: Request):
+    tokens = request.session.get("tokens")
+    if not tokens:
+        return RedirectResponse("/login")
+    return JSONResponse({"status": "ok", "id_token_claims": tokens.get("id_token_claims")})
 
 # -------------------------------
 # 임의로 엑셀 특정 행에 쓰는 API (토큰 직접 전달)
 # -------------------------------
 class ExcelInput(BaseModel):
     access_token: str
-    # 예: ["2025-07-30", "홍길동", "010-1234-5678", "주소", "유축기기종", "기기번호", "송장번호"]
-    row: list
-
+    row: list  # 예: ["2025-07-30", "홍길동", "010-1234-5678", "주소", "유축기기종", "기기번호", "송장번호"]
 
 @app.post("/write-excel")
 async def write_excel(data: ExcelInput):
@@ -141,13 +145,10 @@ async def write_excel(data: ExcelInput):
         "Authorization": f"Bearer {data.access_token}",
         "Content-Type": "application/json",
     }
-
     encoded_path = urllib.parse.quote(f"/{FILE_NAME}")
     base_url = f"{GRAPH}/me/drive/root:{encoded_path}:/workbook/worksheets('{WORKSHEET_NAME}')"
-
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
-            # 사용된 범위 가져와서 다음 행 계산
             used_range_url = f"{base_url}/usedRange"
             used_res = await client.get(used_range_url, headers=headers)
             used_data = used_res.json()
@@ -155,7 +156,6 @@ async def write_excel(data: ExcelInput):
             if "address" not in used_data:
                 return {"error": "Unable to detect used range", "details": used_data}
 
-            # 예: '유축기출고'!A1:G5 → 마지막 행 5 추출
             address = used_data["address"]
             last_row = int(address.split("!")[1].split(":")[1][1:])
             next_row = last_row + 1
@@ -166,12 +166,9 @@ async def write_excel(data: ExcelInput):
 
             if response.status_code != 200:
                 return {"error": "Failed to write to Excel", "details": response.text}
-
     except Exception as e:
         return {"error": "Internal Server Error", "details": str(e)}
-
     return {"status": "success", "row": data.row, "range": target_range}
-
 
 # -------------------------------
 # OCR → 엑셀 반영 (실사용 라우트)
@@ -181,7 +178,6 @@ async def process_ocr(qr_text: str = Form(...), image: UploadFile = File(...)):
     temp_path = f"temp_{image.filename}"
     with open(temp_path, "wb") as buffer:
         shutil.copyfileobj(image.file, buffer)
-
     try:
         result = make_final_entry(qr_text, temp_path)
         append_row_to_excel(result)
@@ -190,13 +186,11 @@ async def process_ocr(qr_text: str = Form(...), image: UploadFile = File(...)):
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
-
 # -------------------------------
 # 원드라이브 파일 존재 Ping (선택)
 # -------------------------------
 def _auth():
     return {"Authorization": f"Bearer {ACCESS_TOKEN}"} if ACCESS_TOKEN else {}
-
 
 @app.get("/onedrive/ping")
 def onedrive_ping():
@@ -207,7 +201,6 @@ def onedrive_ping():
         return {"status": r.status_code, "json": r.json()}
     except Exception as e:
         return {"error": str(e)}
-
 
 # -------------------------------
 # DEBUG: Azure 환경 확인
@@ -222,5 +215,6 @@ def dbg():
         "file_name": FILE_NAME,
         "worksheet": WORKSHEET_NAME,
     }
+
 
 

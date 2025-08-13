@@ -2,7 +2,8 @@ from PIL import Image
 import pytesseract
 import re
 from datetime import datetime
-pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
+import os
+pytesseract.pytesseract.tesseract_cmd = os.getenv("TESSERACT_CMD", "/usr/bin/tesseract")
 
 def extract_shipping_info(image_path):
     image = Image.open(image_path)

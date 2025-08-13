@@ -10,8 +10,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
-# FastAPI 실행
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
 
+# 런타임 환경
+ENV TESSERACT_CMD=/usr/bin/tesseract
+ENV PYTHONUNBUFFERED=1
 
+# FastAPI 실행 (Render의 PORT 환경변수 대응)
+CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}"]
 
