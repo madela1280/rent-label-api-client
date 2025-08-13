@@ -221,5 +221,29 @@ def dbg_secret():
         "sha256_fp": sha256(sec.encode()).hexdigest()[:16]
     }
 
+# === 진단용: 런타임 Azure 설정/로그인 URL 확인 ===
+from hashlib import sha256
+from fastapi.responses import PlainTextResponse
+
+@app.get("/__debug/azure")
+def dbg_azure():
+    sec = os.getenv("CLIENT_SECRET") or ""
+    return {
+        "client_id": CLIENT_ID,
+        "tenant_id": TENANT_ID,
+        "authority": AUTHORITY,
+        "redirect_uri": REDIRECT_URI,
+        "secret_len": len(sec),
+        "secret_fp": sha256(sec.encode()).hexdigest()[:12],
+    }
+
+@app.get("/login-url", response_class=PlainTextResponse)
+def login_url():
+    # MSAL이 실제로 만드는 authorize URL 그대로 문자열로만 반환
+    url = _build_msal_app().get_authorization_request_url(
+        scopes=SCOPES, state="debug", redirect_uri=REDIRECT_URI, prompt="select_account"
+    )
+    return url
+
 
 
