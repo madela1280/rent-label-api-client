@@ -26,10 +26,10 @@ app = FastAPI()
 app.add_middleware(
     SessionMiddleware,
     secret_key=os.getenv("SESSION_SECRET", "change-me"),
-    same_site="none",   # ← MS 로그인(타 도메인) → 우리 도메인 콜백 시 쿠키 전달
-    https_only=True,    # ← SameSite=None일 때는 Secure(HTTPS) 필수
+    same_site="none",   # ← 로그인 도메인(ms) → 우리 도메인 콜백 시 쿠키 전달
+    https_only=True,    # ← SameSite=None이면 Secure(HTTPS) 필수
     max_age=3600,
-    session_cookie="session"
+    session_cookie="session",
 )
 
 # -------------------------------
