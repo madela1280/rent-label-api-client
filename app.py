@@ -85,7 +85,6 @@ def login(request: Request):
 # -------------------------------
 # 콜백 (인증 코드 → 토큰 교환)
 # -------------------------------
-# --- /callback: 토큰은 파일에만 저장, 세션에는 '작은 user 정보'만 ---
 @app.get("/callback")
 async def callback(request: Request):
     if request.query_params.get("state") != request.session.get("state"):
@@ -104,14 +103,21 @@ async def callback(request: Request):
     if "access_token" not in result:
         return JSONResponse({"error": "Token acquire failed", "details": result}, status_code=400)
 
-    # refresh_token은 파일에 (이미 있던 로직 유지)
+    # refresh_token 파일 저장(있으면)
     try:
         with open("refresh_token.txt", "w", encoding="utf-8") as f:
             f.write(result.get("refresh_token", ""))
     except Exception:
         pass
 
-    # ✅ 세션 사이즈 최소화: 작은 사용자 정보만 보관 (쿠키 4KB 이하 보장)
+    # ✅ access_token 파일 저장 (우리는 이걸로 Graph 호출)
+    try:
+        with open("access_token.txt", "w", encoding="utf-8") as f:
+            f.write(result.get("access_token", ""))
+    except Exception:
+        pass
+
+    # ✅ 세션은 가벼운 사용자 정보만
     claims = result.get("id_token_claims", {}) or {}
     request.session.clear()
     request.session["user"] = {
@@ -121,7 +127,6 @@ async def callback(request: Request):
     }
 
     return RedirectResponse("/me")
-
 
 # --- /me: 세션에서 user만 확인 ---
 @app.get("/me")
@@ -191,45 +196,31 @@ async def callback_login_path(request: Request):
 async def callback_login_path_slash(request: Request):
     return await callback(request)
 
-@app.get("/me")
-def me(request: Request):
-    tokens = request.session.get("tokens")
-    if not tokens:
-        return RedirectResponse("/login")
-    return JSONResponse({"status": "ok", "id_token_claims": tokens.get("id_token_claims")})
-
 # --- Graph 호출 테스트: refresh_token으로 access_token 갱신 후 /me 조회 ---
 SCOPES_GRAPH = ["User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All"]
 
-def _get_access_token_from_refresh():
+def _get_access_token():
     try:
-        with open("refresh_token.txt", "r", encoding="utf-8") as f:
-            rt = f.read().strip()
-        if not rt:
-            return None, "no refresh token"
-    except Exception as e:
-        return None, f"read error: {e}"
-
-    app_msal = _build_msal_app()
-    result = app_msal.acquire_token_by_refresh_token(rt, scopes=SCOPES_GRAPH)
-    if "access_token" not in result:
-        return None, result  # 에러 상세 그대로 반환
-    return result["access_token"], None
+        with open("access_token.txt", "r", encoding="utf-8") as f:
+            t = f.read().strip()
+        return t if t else None
+    except Exception:
+        return None
 
 @app.get("/graph/me")
 def graph_me():
-    token, err = _get_access_token_from_refresh()
+    token = _get_access_token()
     if not token:
-        return JSONResponse({"error": "token_error", "details": err}, status_code=400)
+        return JSONResponse({"error": "no_access_token"}, status_code=401)
     headers = {"Authorization": f"Bearer {token}"}
     r = requests.get(f"{GRAPH}/me", headers=headers)
     return JSONResponse({"status": r.status_code, "json": r.json()})
 
 @app.get("/onedrive")
 def onedrive():
-    token, err = _get_access_token_from_refresh()
+    token = _get_access_token()
     if not token:
-        return JSONResponse({"error": "token_error", "details": err}, status_code=400)
+        return JSONResponse({"error": "no_access_token"}, status_code=401)
     headers = {"Authorization": f"Bearer {token}"}
     r = requests.get("https://graph.microsoft.com/v1.0/me/drive/root/children", headers=headers)
     return JSONResponse({"status": r.status_code, "json": r.json()})
