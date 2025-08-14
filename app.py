@@ -75,7 +75,7 @@ def login(request: Request):
     scopes=["User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All"],
     state=request.session["state"],
     redirect_uri=REDIRECT_URI,
-    prompt="select_account",
+    prompt="login",
     response_mode="query",
 )
 
