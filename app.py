@@ -225,6 +225,61 @@ def onedrive():
     r = requests.get("https://graph.microsoft.com/v1.0/me/drive/root/children", headers=headers)
     return JSONResponse({"status": r.status_code, "json": r.json()})
 
+from fastapi import Body
+
+FILE_NAME = os.getenv("FILE_NAME", "유축기출고.xlsx")
+SHEET_NAME = os.getenv("WORKSHEET_NAME", "유축기출고")
+
+@app.post("/excel/append")
+def excel_append(
+    row: list = Body(...)
+):
+    """
+    row 예시:
+    ["2025-08-12","홍길동","010-1234-5678","서울시 강남구 ...","SM123456","시밀레 S6","송장번호123"]
+    """
+    token = _get_access_token()
+    if not token:
+        return JSONResponse({"error": "no_access_token"}, status_code=401)
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    # 1) 파일 찾기
+    search = requests.get(
+        f"{GRAPH}/me/drive/root/search(q='{FILE_NAME}')?$top=1",
+        headers=headers
+    ).json()
+    items = search.get("value", [])
+    if not items or items[0]["name"] != FILE_NAME:
+        return JSONResponse({"error": "file_not_found", "details": FILE_NAME}, status_code=404)
+
+    item_id = items[0]["id"]
+
+    # 2) 현재 사용 범위 조회 → 다음 행 계산
+    used = requests.get(
+        f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/usedRange",
+        headers=headers
+    ).json()
+    address = used.get("address") or f"{SHEET_NAME}!A1:A1"
+    # address 예: "유축기출고!A1:G12" → 끝행 12 추출
+    try:
+        last_row = int(address.split("!")[1].split(":")[1][1:])
+    except Exception:
+        last_row = 1
+    next_row = last_row + 1
+    target = f"A{next_row}:G{next_row}"  # 열 수는 필요에 맞게 조정
+
+    # 3) 쓰기
+    resp = requests.patch(
+        f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/range(address='{target}')",
+        headers=headers,
+        json={"values": [row]},
+    )
+    if resp.status_code != 200:
+        return JSONResponse({"error": "write_failed", "status": resp.status_code, "text": resp.text}, status_code=500)
+
+    return {"status": "ok", "range": target, "written": row}
+
+
 
 
 
