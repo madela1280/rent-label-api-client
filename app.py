@@ -289,7 +289,16 @@ async def process_ocr(qr_text: str = Form(...), image: UploadFile = File(...)):
         # 사진에서 값 추출 (ocr_utils 내부 로직 사용)
         result = make_final_entry(qr_text, temp_path)
         # 엑셀에 추가 (excel_utils 내부 로직 사용)
-        append_row_to_excel(result)
+        append_row_to_excel([
+              result.get("출고일", ""),
+              result.get("대여자명", ""),
+              result.get("전화번호", ""),
+              result.get("주소", ""),
+              result.get("기기번호", ""),
+              result.get("기종", ""),
+              result.get("송장번호", ""),
+        ])
+
         return {"status": "success", "data": result}
     finally:
         if os.path.exists(temp_path):
