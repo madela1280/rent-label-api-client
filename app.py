@@ -279,6 +279,22 @@ def excel_append(
 
     return {"status": "ok", "range": target, "written": row}
 
+# --- 사진 + OCR + 엑셀 쓰기 ---
+@app.post("/process-ocr/")
+async def process_ocr(qr_text: str = Form(...), image: UploadFile = File(...)):
+    temp_path = f"temp_{image.filename}"
+    with open(temp_path, "wb") as f:
+        shutil.copyfileobj(image.file, f)
+    try:
+        # 사진에서 값 추출 (ocr_utils 내부 로직 사용)
+        result = make_final_entry(qr_text, temp_path)
+        # 엑셀에 추가 (excel_utils 내부 로직 사용)
+        append_row_to_excel(result)
+        return {"status": "success", "data": result}
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
 
 
 
