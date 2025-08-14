@@ -85,6 +85,7 @@ def login(request: Request):
 # -------------------------------
 # 콜백 (인증 코드 → 토큰 교환)
 # -------------------------------
+# --- /callback: 토큰은 파일에만 저장, 세션에는 '작은 user 정보'만 ---
 @app.get("/callback")
 async def callback(request: Request):
     if request.query_params.get("state") != request.session.get("state"):
@@ -96,28 +97,39 @@ async def callback(request: Request):
 
     result = _build_msal_app().acquire_token_by_authorization_code(
         code,
-        scopes=SCOPES,
+        scopes=["User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All"],
         redirect_uri=REDIRECT_URI,
     )
 
-    # ✅ 토큰 실패 시 상세 에러를 그대로 반환해 ‘무한 추측’ 방지
     if "access_token" not in result:
         return JSONResponse({"error": "Token acquire failed", "details": result}, status_code=400)
 
+    # refresh_token은 파일에 (이미 있던 로직 유지)
     try:
         with open("refresh_token.txt", "w", encoding="utf-8") as f:
             f.write(result.get("refresh_token", ""))
     except Exception:
         pass
 
-    request.session["tokens"] = {
-        "access_token": result["access_token"],
-        "refresh_token": result.get("refresh_token"),
-        "expires_in": result.get("expires_in"),
-        "id_token_claims": result.get("id_token_claims"),
+    # ✅ 세션 사이즈 최소화: 작은 사용자 정보만 보관 (쿠키 4KB 이하 보장)
+    claims = result.get("id_token_claims", {}) or {}
+    request.session.clear()
+    request.session["user"] = {
+        "name": claims.get("name"),
+        "upn": claims.get("preferred_username"),
+        "oid": claims.get("oid"),
     }
 
     return RedirectResponse("/me")
+
+
+# --- /me: 세션에서 user만 확인 ---
+@app.get("/me")
+def me(request: Request):
+    user = request.session.get("user")
+    if not user:
+        return RedirectResponse("/login")
+    return JSONResponse({"status": "ok", "user": user})
 
 # === 진단용: 런타임 Azure 설정/로그인 URL 확인 (강화) ===
 from hashlib import sha256
