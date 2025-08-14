@@ -198,6 +198,34 @@ def me(request: Request):
         return RedirectResponse("/login")
     return JSONResponse({"status": "ok", "id_token_claims": tokens.get("id_token_claims")})
 
+# --- Graph 호출 테스트: refresh_token으로 access_token 갱신 후 /me 조회 ---
+SCOPES_GRAPH = ["User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All"]
+
+def _get_access_token_from_refresh():
+    try:
+        with open("refresh_token.txt", "r", encoding="utf-8") as f:
+            rt = f.read().strip()
+        if not rt:
+            return None, "no refresh token"
+    except Exception as e:
+        return None, f"read error: {e}"
+
+    app_msal = _build_msal_app()
+    result = app_msal.acquire_token_by_refresh_token(rt, scopes=SCOPES_GRAPH)
+    if "access_token" not in result:
+        return None, result  # 에러 상세 그대로 반환
+    return result["access_token"], None
+
+@app.get("/graph/me")
+def graph_me():
+    token, err = _get_access_token_from_refresh()
+    if not token:
+        return JSONResponse({"error": "token_error", "details": err}, status_code=400)
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.get(f"{GRAPH}/me", headers=headers)
+    return JSONResponse({"status": r.status_code, "json": r.json()})
+
+
 
 
 
