@@ -225,6 +225,16 @@ def graph_me():
     r = requests.get(f"{GRAPH}/me", headers=headers)
     return JSONResponse({"status": r.status_code, "json": r.json()})
 
+@app.get("/onedrive")
+def onedrive():
+    token, err = _get_access_token_from_refresh()
+    if not token:
+        return JSONResponse({"error": "token_error", "details": err}, status_code=400)
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.get("https://graph.microsoft.com/v1.0/me/drive/root/children", headers=headers)
+    return JSONResponse({"status": r.status_code, "json": r.json()})
+
+
 
 
 
