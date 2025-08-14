@@ -279,32 +279,82 @@ def excel_append(
 
     return {"status": "ok", "range": target, "written": row}
 
-# --- 사진 + OCR + 엑셀 쓰기 ---
+# --- 사진 + OCR + OneDrive 엑셀 쓰기 ---
 @app.post("/process-ocr/")
 async def process_ocr(qr_text: str = Form(...), image: UploadFile = File(...)):
     temp_path = f"temp_{image.filename}"
     with open(temp_path, "wb") as f:
         shutil.copyfileobj(image.file, f)
     try:
-        # 사진에서 값 추출 (ocr_utils 내부 로직 사용)
+        # 1) OCR 수행
         result = make_final_entry(qr_text, temp_path)
-        # 엑셀에 추가 (excel_utils 내부 로직 사용)
-        append_row_to_excel([
-              result.get("출고일", ""),
-              result.get("대여자명", ""),
-              result.get("전화번호", ""),
-              result.get("주소", ""),
-              result.get("기기번호", ""),
-              result.get("기종", ""),
-              result.get("송장번호", ""),
-        ])
 
-        return {"status": "success", "data": result}
+        # 2) 엑셀에 쓸 배열로 변환 (빈 값 허용)
+        row = [
+            result.get("출고일", ""),
+            result.get("대여자명", ""),
+            result.get("전화번호", ""),
+            result.get("주소", ""),
+            result.get("기기번호", ""),
+            result.get("기종", ""),
+            result.get("송장번호", ""),
+        ]
+
+        # 3) OneDrive에 기록
+        ok, info = write_row_to_onedrive(row)
+        if not ok:
+            return {
+                "status": "ocr_ok_but_write_failed",
+                "data": result,
+                "write_error": info
+            }
+
+        return {"status": "success", "data": result, "write_info": info}
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
+# === OneDrive에 한 줄 쓰는 헬퍼 ===
+def write_row_to_onedrive(row):
+    token = _get_access_token()
+    if not token:
+        return False, {"error": "no_access_token"}
 
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    FILE_NAME = os.getenv("FILE_NAME", "유축기출고.xlsx")
+    SHEET_NAME = os.getenv("WORKSHEET_NAME", "유축기출고")
+
+    # 1) 파일 찾기
+    search = requests.get(
+        f"{GRAPH}/me/drive/root/search(q='{FILE_NAME}')?$top=1", headers=headers
+    ).json()
+    items = search.get("value", [])
+    if not items or items[0]["name"] != FILE_NAME:
+        return False, {"error": "file_not_found", "file": FILE_NAME}
+    item_id = items[0]["id"]
+
+    # 2) 사용범위 조회 → 다음 행 계산
+    used = requests.get(
+        f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/usedRange",
+        headers=headers,
+    ).json()
+    address = used.get("address") or f"{SHEET_NAME}!A1:A1"
+    try:
+        last_row = int(address.split("!")[1].split(":")[1][1:])
+    except Exception:
+        last_row = 1
+    next_row = last_row + 1
+    target = f"A{next_row}:G{next_row}"
+
+    # 3) 쓰기
+    resp = requests.patch(
+        f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/range(address='{target}')",
+        headers=headers,
+        json={"values": [row]},
+    )
+    if resp.status_code != 200:
+        return False, {"error": "write_failed", "status": resp.status_code, "text": resp.text}
+    return True, {"range": target}
 
 
 
