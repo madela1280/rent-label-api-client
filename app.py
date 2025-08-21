@@ -356,6 +356,47 @@ def write_row_to_onedrive(row):
         return False, {"error": "write_failed", "status": resp.status_code, "text": resp.text}
     return True, {"range": target}
 
+# --- OCR 디버그: 원문/신뢰도 확인용 ---
+from pytesseract import image_to_data, Output
+from PIL import Image, ImageOps, ImageFilter
+
+def _preprocess_for_ocr(p: str) -> Image.Image:
+    # 가벼운 전처리: 흑백 → 대비/샤픈 → 이진화
+    img = Image.open(p).convert("L")
+    img = ImageOps.autocontrast(img)
+    img = img.filter(ImageFilter.UnsharpMask(radius=1.0, percent=150, threshold=3))
+    # 간단 이진화
+    img = img.point(lambda x: 255 if x > 180 else 0, mode="1")
+    return img.convert("L")
+
+@app.post("/ocr/debug")
+async def ocr_debug(image: UploadFile = File(...)):
+    temp_path = f"temp_{image.filename}"
+    with open(temp_path, "wb") as f:
+        shutil.copyfileobj(image.file, f)
+    try:
+        img = _preprocess_for_ocr(temp_path)
+        # 숫자/영문 위주 택배송장에 유리한 설정 (필요 시 수정)
+        cfg = "--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-:/()#"
+        data = image_to_data(img, config=cfg, output_type=Output.DICT, lang="eng+kor")
+
+        # 토큰별 텍스트/신뢰도/박스 반환 (상위 200개 제한)
+        out = []
+        n = min(len(data["text"]), 200)
+        for i in range(n):
+            txt = (data["text"][i] or "").strip()
+            if not txt:
+                continue
+            out.append({
+                "text": txt,
+                "conf": float(data["conf"][i]),
+                "bbox": [int(data["left"][i]), int(data["top"][i]), int(data["width"][i]), int(data["height"][i])]
+            })
+
+        return {"count": len(out), "items": out[:200]}
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 
