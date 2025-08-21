@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>유축기 출고 스캔</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <meta name="theme-color" content="#111827" />
+  <style>
+    body { font-family: system-ui,-apple-system,Segoe UI,Roboto; margin:0; padding:16px; }
+    header { font-weight:700; font-size:18px; margin-bottom:12px; }
+    .card { border:1px solid #e5e7eb; border-radius:12px; padding:16px; }
+    button { padding:12px 16px; border-radius:10px; border:0; background:#111827; color:#fff; font-weight:600; }
+  </style>
+</head>
+<body>
+  <header>유축기 출고 스캔 (PWA)</header>
+  <div class="card">
+  <p>카메라 테스트</p>
+  <video id="preview" autoplay playsinline style="width:100%;border:1px solid #ccc;border-radius:8px;"></video>
+  <br/><br/>
+  <button id="captureBtn">사진 촬영</button>
+
+  <canvas id="snapshot" style="display:none;margin-top:12px;border:1px solid #e5e7eb;border-radius:8px;"></canvas>
+
+  <!-- OCR 결과 패널 -->
+  <div id="ocrPanel" style="display:none;margin-top:12px;">
+    <div style="font-weight:600;margin-bottom:8px;">인식 결과 (확인 후 저장)</div>
+    <div style="line-height:1.8">
+      출고일: <span id="r_shipDate">-</span><br/>
+      대여자명: <span id="r_name">-</span> / 전화: <span id="r_phone">-</span><br/>
+      주소: <span id="r_addr">-</span><br/>
+      기기번호: <span id="r_deviceId">-</span> / 기종: <span id="r_model">-</span><br/>
+      송장번호: <span id="r_invoice">-</span>
+    </div>
+    <label style="display:block;margin:10px 0;">
+      <input type="checkbox" id="ackChk"/> 위 내용 확인함
+    </label>
+    <button id="confirmBtn" disabled>확인 (엑셀 저장)</button>
+  </div>
+</div>
+
+  <script>
+  // 서비스워커 등록
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js');
+  }
+
+  // PWA 설치 버튼 제어 (버튼 없으면 무시)
+  let deferredPrompt;
+  const installBtn = document.getElementById('installBtn');
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    if (installBtn) installBtn.hidden = false;
+  });
+  if (installBtn) {
+    installBtn.addEventListener('click', async () => {
+      installBtn.hidden = true;
+      if (deferredPrompt) {
+        deferredPrompt.prompt();
+        await deferredPrompt.userChoice;
+        deferredPrompt = null;
+      }
+    });
+  }
+
+  // 카메라 프리뷰 시작
+  async function startCamera() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' }, audio: false
+      });
+      const video = document.getElementById('preview');
+      video.srcObject = stream;
+      await video.play();
+    } catch (err) {
+      alert('카메라 접근 실패: ' + err);
+    }
+  }
+  startCamera();
+
+  // 촬영 → 캔버스 표시
+  document.getElementById('captureBtn').addEventListener('click', () => {
+    const video = document.getElementById('preview');
+    const canvas = document.getElementById('snapshot');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+    if (!w || !h) return alert('카메라 초기화 대기 후 다시 시도');
+
+    canvas.width = w;
+    canvas.height = h;
+    ctx.drawImage(video, 0, 0, w, h);
+    canvas.style.display = 'block';
+  });
+
+// 캔버스 하단 오버레이로 텍스트 표시
+  function renderOverlayOnCanvas(result) {
+    const canvas = document.getElementById('snapshot');
+    const ctx = canvas.getContext('2d');
+    const pad = 16, boxH = 120;
+
+    // 반투명 박스
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, canvas.height - boxH, canvas.width, boxH);
+
+    // 텍스트
+    ctx.fillStyle = '#fff';
+    ctx.font = '16px system-ui';
+    const lines = [
+      `기기번호: ${result.deviceId || '미인식'} / 기종: ${result.model || '미인식'}`,
+      `수령인: ${result.name || '미인식'} / 전화: ${result.phone || '미인식'}`,
+      `주소: ${result.addr || '미인식'} / 송장: ${result.invoice || '미인식'}`
+    ];
+    lines.forEach((t, i) => ctx.fillText(t, pad, canvas.height - boxH + pad + i*24));
+  }
+
+  // 패널에 값 채우기
+  function populateResultPanel(result) {
+    document.getElementById('r_shipDate').textContent = result.shipDate || '-';
+    document.getElementById('r_name').textContent     = result.name || '-';
+    document.getElementById('r_phone').textContent    = result.phone || '-';
+    document.getElementById('r_addr').textContent     = result.addr || '-';
+    document.getElementById('r_deviceId').textContent = result.deviceId || '-';
+    document.getElementById('r_model').textContent    = result.model || '-';
+    document.getElementById('r_invoice').textContent  = result.invoice || '-';
+    document.getElementById('ocrPanel').style.display = 'block';
+  }
+
+  // 체크해야 저장 버튼 활성화
+  document.getElementById('ackChk')?.addEventListener('change', (e) => {
+    document.getElementById('confirmBtn').disabled = !e.target.checked;
+  });
+
+  // 촬영 버튼 클릭 → 임시(모의값) 표시
+  document.getElementById('captureBtn').addEventListener('click', () => {
+    const video = document.getElementById('preview');
+    const canvas = document.getElementById('snapshot');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    const w = video.videoWidth, h = video.videoHeight;
+    if (!w || !h) return alert('카메라 초기화 대기 후 다시 시도');
+    canvas.width = w; canvas.height = h;
+    ctx.drawImage(video, 0, 0, w, h);
+    canvas.style.display = 'block';
+
+    // ⬇️ 다음 단계에서 실제 OCR 결과로 교체될 자리 (현재는 모의 데이터)
+    const mock = {
+      shipDate: new Date().toISOString().slice(0,10),
+      name: '-', phone: '-', addr: '-',
+      deviceId: '-', model: '-', invoice: '-'
+    };
+    renderOverlayOnCanvas(mock);
+    populateResultPanel(mock);
+  });
+
+  // 확인(엑셀 저장) 버튼 → Render 서버 API 호출
+document.getElementById('confirmBtn').addEventListener('click', async () => {
+  const canvas = document.getElementById('snapshot');
+  if (!canvas) return alert("캡처된 이미지가 없습니다.");
+
+  canvas.toBlob(async (blob) => {
+    const formData = new FormData();
+    formData.append("image", blob, "capture.jpg");
+    formData.append("qr_text", ""); // 지금은 빈 값 전송(백엔드에서 기본값 처리)
+
+    try {
+      // ⬇️ Render 배포 주소로 변경
+      const API_BASE = "https://<your-render-app>.onrender.com";
+      const response = await fetch(`${API_BASE}/process-ocr/`, {
+        method: "POST",
+        body: formData
+      });
+
+      if (!response.ok) throw new Error(`서버 응답 오류 (${response.status})`);
+      const api = await response.json();
+
+      // 백엔드 응답 매핑 (한글키 → UI키)
+      const d = api.data || {};
+      const mapped = {
+        shipDate: d['출고일'] || '',
+        name:     d['대여자명'] || '',
+        phone:    d['전화번호'] || '',
+        addr:     d['주소'] || '',
+        deviceId: d['기기번호'] || '',
+        model:    d['기종'] || '',
+        invoice:  d['송장번호'] || ''
+      };
+
+      renderOverlayOnCanvas(mapped);
+      populateResultPanel(mapped);
+
+      // 백엔드가 엑셀 저장까지 수행함 → 상태 표시
+      if (api.status === 'success') {
+        alert('OCR 완료 및 엑셀 저장 성공');
+      } else {
+        alert('OCR 처리됨 (엑셀 저장 오류 가능): ' + JSON.stringify(api.write_error || {}));
+      }
+    } catch (err) {
+      console.error(err);
+      alert("서버 전송 실패: " + err.message);
+    }
+  }, "image/jpeg");
+});
+
+</script>
+</body>
+</html>
+

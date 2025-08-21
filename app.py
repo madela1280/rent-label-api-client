@@ -32,6 +32,16 @@ app.add_middleware(
     session_cookie="session",
 )
 
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],   # 필요하면 특정 도메인만 지정
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # -------------------------------
 # ENV & Constants
 # -------------------------------
@@ -281,7 +291,7 @@ def excel_append(
 
 # --- 사진 + OCR + OneDrive 엑셀 쓰기 ---
 @app.post("/process-ocr/")
-async def process_ocr(qr_text: str = Form(...), image: UploadFile = File(...)):
+async def process_ocr(qr_text: str = Form(""), image: UploadFile = File(...)):
     temp_path = f"temp_{image.filename}"
     with open(temp_path, "wb") as f:
         shutil.copyfileobj(image.file, f)
