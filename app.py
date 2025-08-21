@@ -437,6 +437,25 @@ async def ocr_debug(image: UploadFile = File(...)):
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
+@app.post("/excel/upload")
+def excel_upload(payload: dict = Body(...)):
+    # 프론트에서 보낸 값 → 엑셀 한 행으로 변환
+    row = [
+        payload.get("shipDate", ""),
+        payload.get("name", ""),
+        payload.get("phone", ""),
+        payload.get("addr", ""),
+        payload.get("deviceId", ""),
+        payload.get("model", ""),
+        payload.get("invoice", ""),
+    ]
+
+    ok, info = write_row_to_onedrive(row)  # 이미 위에서 정의된 헬퍼 사용
+    if not ok:
+        return JSONResponse({"status": "error", "write_error": info}, status_code=500)
+    return {"status": "ok", "range": info.get("range")}
+
+
 
 
 
