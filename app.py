@@ -186,16 +186,22 @@ def whoami(request: Request):
 
 from uuid import uuid4
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+@app.get("/", response_class=FileResponse)
+def root():
+    return FileResponse(os.path.join(BASE_DIR, "index.html"))
+
 @app.get("/__ping")
 def ping(): return {"ping": str(uuid4())}
 
 @app.get("/manifest.webmanifest", response_class=FileResponse)
 def manifest():
-    return FileResponse("manifest.webmanifest")
+    return FileResponse(os.path.join(BASE_DIR, "manifest.webmanifest"))
 
 @app.get("/sw.js", response_class=FileResponse)
 def sw():
-    return FileResponse("sw.js")
+    return FileResponse(os.path.join(BASE_DIR, "sw.js"))
 
 # 콜백 경로 변형까지 모두 수용
 @app.get("/callback/")
@@ -412,35 +418,6 @@ async def ocr_debug(image: UploadFile = File(...)):
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
-@app.post("/ocr/debug")
-async def ocr_debug(image: UploadFile = File(...)):
-    temp_path = f"temp_{image.filename}"
-    with open(temp_path, "wb") as f:
-        shutil.copyfileobj(image.file, f)
-    try:
-        img = _preprocess_for_ocr(temp_path)
-        # 숫자/영문 위주 택배송장에 유리한 설정 (필요 시 수정)
-        cfg = "--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-:/()#"
-        data = image_to_data(img, config=cfg, output_type=Output.DICT, lang="eng+kor")
-
-        # 토큰별 텍스트/신뢰도/박스 반환 (상위 200개 제한)
-        out = []
-        n = min(len(data["text"]), 200)
-        for i in range(n):
-            txt = (data["text"][i] or "").strip()
-            if not txt:
-                continue
-            out.append({
-                "text": txt,
-                "conf": float(data["conf"][i]),
-                "bbox": [int(data["left"][i]), int(data["top"][i]), int(data["width"][i]), int(data["height"][i])]
-            })
-
-        return {"count": len(out), "items": out[:200]}
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-
 @app.post("/excel/upload")
 def excel_upload(payload: dict = Body(...)):
     # 프론트에서 보낸 값 → 엑셀 한 행으로 변환
@@ -458,6 +435,10 @@ def excel_upload(payload: dict = Body(...)):
     if not ok:
         return JSONResponse({"status": "error", "write_error": info}, status_code=500)
     return {"status": "ok", "range": info.get("range")}
+
+if __name__ == "__main__":
+    import uvicorn, os
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 
 
