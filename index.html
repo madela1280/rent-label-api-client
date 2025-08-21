@@ -49,6 +49,78 @@
   // PWA 설치 버튼 제어 (버튼 없으면 무시)
   let deferredPrompt;
   const installBtn = document.getElementById('installBtn');
+    // 카메라 실행
+  const video = document.getElementById("preview");
+  const canvas = document.getElementById("snapshot");
+  const captureBtn = document.getElementById("captureBtn");
+  const confirmBtn = document.getElementById("confirmBtn");
+  const ackChk = document.getElementById("ackChk");
+
+  // OCR 표시 영역
+  const r_shipDate = document.getElementById("r_shipDate");
+  const r_name = document.getElementById("r_name");
+  const r_phone = document.getElementById("r_phone");
+  const r_addr = document.getElementById("r_addr");
+  const r_deviceId = document.getElementById("r_deviceId");
+  const r_model = document.getElementById("r_model");
+  const r_invoice = document.getElementById("r_invoice");
+
+  // 카메라 스트림 시작
+  navigator.mediaDevices.getUserMedia({ video: true })
+    .then(stream => { video.srcObject = stream; });
+
+  // 사진 캡처
+  captureBtn.addEventListener("click", () => {
+    const ctx = canvas.getContext("2d");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.style.display = "block";
+
+    // TODO: OCR API 호출 → 결과 반영 (임시 더미값)
+    r_shipDate.textContent = "2025-08-21";
+    r_name.textContent = "이유경";
+    r_phone.textContent = "0504-633-0806";
+    r_addr.textContent = "호수마을 교삼록 아파트 3102동 2603호";
+    r_deviceId.textContent = "S12345";
+    r_model.textContent = "Symphony";
+    r_invoice.textContent = "2583-8295-256";
+
+    document.getElementById("ocrPanel").style.display = "block";
+  });
+
+  // 체크박스 → 버튼 활성화
+  ackChk.addEventListener("change", () => {
+    confirmBtn.disabled = !ackChk.checked;
+  });
+
+  // 확인 버튼 → 서버로 업로드
+  confirmBtn.addEventListener("click", async () => {
+    const payload = {
+      shipDate: r_shipDate.textContent,
+      name: r_name.textContent,
+      phone: r_phone.textContent,
+      addr: r_addr.textContent,
+      deviceId: r_deviceId.textContent,
+      model: r_model.textContent,
+      invoice: r_invoice.textContent,
+    };
+
+    const res = await fetch("/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const result = await res.json();
+    if (result.status === "ok") {
+      alert("엑셀 저장 완료!");
+    } else {
+      alert("저장 실패: " + JSON.stringify(result));
+    }
+  });
+</script>
+
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
     deferredPrompt = e;
