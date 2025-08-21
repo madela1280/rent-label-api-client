@@ -146,17 +146,26 @@ confirmBtn.addEventListener("click", async () => {
 
   // 카메라 프리뷰 시작
   async function startCamera() {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' }, audio: false
-      });
-      const video = document.getElementById('preview');
-      video.srcObject = stream;
-      await video.play();
-    } catch (err) {
-      alert('카메라 접근 실패: ' + err);
-    }
-  }
+  const videoEl = document.getElementById('preview');
+  try {
+    // 후면 강제 시도
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { exact: 'environment' } }, audio: false
+    });
+    videoEl.srcObject = stream; await videoEl.play(); return;
+  } catch (_) { /* fallback */ }
+  try {
+    // 후면 우선(ideal) 시도
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' } }, audio: false
+    });
+    videoEl.srcObject = stream; await videoEl.play(); return;
+  } catch (_) { /* fallback */ }
+  // 최종 fallback
+  const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+  videoEl.srcObject = stream; await videoEl.play();
+}
+
   startCamera();
 
   // 촬영 → 캔버스 표시

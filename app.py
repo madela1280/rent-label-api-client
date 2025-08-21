@@ -190,7 +190,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 @app.get("/", response_class=FileResponse)
 def root():
-    return FileResponse(os.path.join(BASE_DIR, "index.html"))
+    return FileResponse(os.path.join(BASE_DIR, "index.html"), media_type="text/html")
 
 @app.get("/__ping")
 def ping(): return {"ping": str(uuid4())}
