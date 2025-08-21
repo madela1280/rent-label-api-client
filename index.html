@@ -82,7 +82,7 @@
     const formData = new FormData();
     formData.append("image", blob, "capture.jpg");
 
-    const res = await fetch("/ocr/debug", { method: "POST", body: formData });
+    const res = await fetch("https://rent-label-api-client-docker.onrender.com/ocr/debug", { method: "POST", body: formData })
     const data = await res.json();
 
     // OCR 결과 패널 표시
@@ -112,11 +112,11 @@ confirmBtn.addEventListener("click", async () => {
     invoice: r_invoice.textContent,
   };
 
-  const res = await fetch("/excel/upload", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  const res = await fetch("https://rent-label-api-client-docker.onrender.com/excel/upload", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(payload),
+})
 
   const result = await res.json();
   if (result.status === "ok") {

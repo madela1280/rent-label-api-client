@@ -7,7 +7,7 @@ import uuid
 from dotenv import load_dotenv; load_dotenv()
 
 from fastapi import FastAPI, Request, UploadFile, Form, File
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -189,9 +189,13 @@ from uuid import uuid4
 @app.get("/__ping")
 def ping(): return {"ping": str(uuid4())}
 
-@app.get("/")
-def root():
-    return {"message": "probe1"}
+@app.get("/manifest.webmanifest", response_class=FileResponse)
+def manifest():
+    return FileResponse("manifest.webmanifest")
+
+@app.get("/sw.js", response_class=FileResponse)
+def sw():
+    return FileResponse("sw.js")
 
 # 콜백 경로 변형까지 모두 수용
 @app.get("/callback/")
