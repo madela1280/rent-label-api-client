@@ -156,6 +156,11 @@ document.getElementById('confirmBtn').addEventListener('click', () => {
   const btn = document.getElementById('confirmBtn');
   btn.disabled = true;
 
+// 저장 직전에 캔버스에 배지(기종/기기번호) 다시 찍기 → 업로드 파일에 포함되도록
+const label = `${document.getElementById('r_model').textContent} / ${document.getElementById('r_deviceId').textContent}`;
+if (label.trim() !== '/')
+  drawBadge(label);
+
   canvas.toBlob(async (blob) => {
     const fd = new FormData();
     fd.append('image', blob, 'capture.jpg');
