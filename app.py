@@ -396,11 +396,9 @@ async def ocr_debug(image: UploadFile = File(...)):
         shutil.copyfileobj(image.file, f)
     try:
         img = _preprocess_for_ocr(temp_path)
-        # 숫자/영문 위주 택배송장에 유리한 설정 (필요 시 수정)
         cfg = "--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-:/()#"
         data = image_to_data(img, config=cfg, output_type=Output.DICT, lang="eng+kor")
 
-        # 토큰별 텍스트/신뢰도/박스 반환 (상위 200개 제한)
         out = []
         n = min(len(data["text"]), 200)
         for i in range(n):
@@ -413,7 +411,7 @@ async def ocr_debug(image: UploadFile = File(...)):
                 "bbox": [int(data["left"][i]), int(data["top"][i]), int(data["width"][i]), int(data["height"][i])]
             })
 
-        return {"count": len(out), "items": out[:200]}
+        return {"count": len(out), "items": out}
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
