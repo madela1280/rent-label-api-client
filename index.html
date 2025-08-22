@@ -65,37 +65,7 @@
   const r_model = document.getElementById("r_model");
   const r_invoice = document.getElementById("r_invoice");
 
-  // 카메라 스트림 시작
-  navigator.mediaDevices.getUserMedia({ video: true })
-    .then(stream => { video.srcObject = stream; });
-
-  // 사진 캡처
- captureBtn.addEventListener("click", () => {
-  const ctx = canvas.getContext("2d");
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-  canvas.style.display = "block";
-
-  // 캔버스 → 서버 전송
-  canvas.toBlob(async (blob) => {
-    const formData = new FormData();
-    formData.append("image", blob, "capture.jpg");
-
-    const res = await fetch("https://rent-label-api-client-docker.onrender.com/ocr/debug", { method: "POST", body: formData })
-    const data = await res.json();
-
-    // OCR 결과 패널 표시
-    if (data.items && data.items.length > 0) {
-      r_name.textContent = data.items[0].text || "-";
-      r_invoice.textContent = data.items.find(x => x.text.includes("-"))?.text || "-";
-    }
-
-    document.getElementById("ocrPanel").style.display = "block";
-  }, "image/jpeg");
-});
-
-  // 체크박스 → 버튼 활성화
+     // 체크박스 → 버튼 활성화
   ackChk.addEventListener("change", () => {
     confirmBtn.disabled = !ackChk.checked;
   });
@@ -148,10 +118,12 @@ confirmBtn.addEventListener("click", async () => {
   async function startCamera() {
   const videoEl = document.getElementById('preview');
   try {
-    // 후면 강제 시도
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { exact: 'environment' } }, audio: false
-    });
+
+   // ✅ 유지/교체: 후면 우선
+const stream = await navigator.mediaDevices.getUserMedia({
+  video: { facingMode: { ideal: 'environment' } }, audio: false
+});
+
     videoEl.srcObject = stream; await videoEl.play(); return;
   } catch (_) { /* fallback */ }
   try {
@@ -255,12 +227,11 @@ document.getElementById('confirmBtn').addEventListener('click', async () => {
     formData.append("qr_text", ""); // 지금은 빈 값 전송(백엔드에서 기본값 처리)
 
     try {
-      // ⬇️ Render 배포 주소로 변경
-      const API_BASE = "https://<your-render-app>.onrender.com";
-      const response = await fetch(`${API_BASE}/process-ocr/`, {
-        method: "POST",
-        body: formData
-      });
+  const API_BASE = "https://rent-label-api-client-docker.onrender.com";
+  const response = await fetch(`${API_BASE}/process-ocr/`, {
+    method: "POST",
+    body: formData
+  });
 
       if (!response.ok) throw new Error(`서버 응답 오류 (${response.status})`);
       const api = await response.json();
