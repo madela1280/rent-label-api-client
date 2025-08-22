@@ -12,6 +12,7 @@
     .card { border:1px solid #e5e7eb; border-radius:12px; padding:16px; }
     button { padding:12px 16px; border-radius:10px; border:0; background:#111827; color:#fff; font-weight:600; }
     video, canvas { width:100%; border:1px solid #e5e7eb; border-radius:8px; }
+    #preview, #snapshot { width:100%; aspect-ratio:16/7; object-fit:cover; }
   </style>
 </head>
 <body>
@@ -32,7 +33,7 @@
         출고일: <span id="r_shipDate">-</span><br/>
         대여자명: <span id="r_name">-</span> / 전화: <span id="r_phone">-</span><br/>
         주소: <span id="r_addr">-</span><br/>
-        기기번호: <span id="r_deviceId">-</span> / 기종: <span id="r_model">-</span><br/>
+        기종: <span id="r_model">-</span> / 기기번호: <span id="r_deviceId">-</span><br/>
         송장번호: <span id="r_invoice">-</span>
       </div>
       <label style="display:block;margin:10px 0;">
@@ -98,14 +99,37 @@
       ctx.drawImage(videoEl, 0, 0, w, h);
       canvasEl.style.display = 'block';
 
-      // 초기 표시(모의값) – 서버 OCR 연동 전 단계 확인 용
-      const mock = {
-        shipDate: new Date().toISOString().slice(0,10),
-        name: '-', phone: '-', addr: '-',
-        deviceId: '-', model: '-', invoice: '-'
-      };
-      renderOverlayOnCanvas(mock);
-      populateResultPanel(mock);
+     // ⬇️ 서버에 '미리보기(dry=1)'로 보내 OCR만 수행, 엑셀은 저장 안 함
+canvas.toBlob(async (blob) => {
+  const formData = new FormData();
+  formData.append("image", blob, "capture.jpg");
+  formData.append("qr_text", "");   // 필요 시 QR 텍스트 넣기
+  formData.append("dry", "1");      // 미리보기 플래그
+
+  try {
+    const API_BASE = "https://rent-label-api-client-docker.onrender.com";
+    const resp = await fetch(`${API_BASE}/process-ocr/`, { method:"POST", body: formData });
+    if (!resp.ok) throw new Error(`서버 응답 오류 (${resp.status})`);
+    const api = await resp.json();
+
+    // 서버 결과 → 패널/오버레이 반영(키 매핑)
+    const d = api.data || {};
+    const mapped = {
+      shipDate: d['출고일'] || '',
+      name:     d['대여자명'] || '',
+      phone:    d['전화번호'] || '',
+      addr:     d['주소'] || '',
+      deviceId: d['기기번호'] || '',
+      model:    d['기종'] || '',
+      invoice:  d['송장번호'] || ''
+    };
+    renderOverlayOnCanvas(mapped);
+    populateResultPanel(mapped);
+  } catch (err) {
+    console.error(err);
+    alert("미리보기 OCR 실패: " + err.message);
+  }
+}, "image/jpeg");
     });
 
     // ===== 하단 오버레이 =====
