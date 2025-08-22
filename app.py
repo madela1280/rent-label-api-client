@@ -7,7 +7,7 @@ import uuid
 from dotenv import load_dotenv; load_dotenv()
 
 from fastapi import FastAPI, Request, UploadFile, Form, File
-from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
+from fastapi.responses import RedirectResponse, JSONResponse, FileResponse, HTMLResponse
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -188,9 +188,10 @@ from uuid import uuid4
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-@app.get("/", response_class=FileResponse)
+@app.get("/", response_class=HTMLResponse)
 def root():
-    return FileResponse(os.path.join(BASE_DIR, "index.html"), media_type="text/html")
+    with open(os.path.join(BASE_DIR, "index.html"), "r", encoding="utf-8") as f:
+        return HTMLResponse(f.read(), media_type="text/html; charset=utf-8")
 
 @app.get("/__ping")
 def ping(): return {"ping": str(uuid4())}
