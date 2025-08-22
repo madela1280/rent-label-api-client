@@ -153,17 +153,24 @@ document.getElementById('captureBtn').addEventListener('click', () => {
     name:'-', phone:'-', addr:'-', model:'-', deviceId:'-', invoice:'-'
   };
 
-  const { text } = scanQRFromCanvas();
+  const { text, loc } = scanQRFromCanvas();
 
   if (text) {
     const md = parseModelDevice(text);
     base.model = md.model; base.deviceId = md.deviceId;
 
-    // ← 좌측 상단 고정
+    // 좌측 상단(QR의 top-left 바로 위로 48px 올려서 겹치지 않게)
+    if (loc && loc.topLeftCorner) {
+      const tl = loc.topLeftCorner;
+      badgePos = { x: tl.x, y: tl.y - 48 }; // 배지 높이(40) + 여백
+    } else {
+      badgePos = { x: 24, y: 24 }; // QR loc 없으면 화면 좌상단 고정
+    }
+
     badgeText = `${base.model} / ${base.deviceId}`;
-    badgePos  = { x: 24, y: 24 };
     drawBadge(badgeText, badgePos.x, badgePos.y);
   } else {
+    // QR 미인식 시 좌상단 기본 위치에 기종/기기번호 없음
     badgeText = '';
     badgePos  = { x:24, y:24 };
   }
