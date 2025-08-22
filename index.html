@@ -7,169 +7,187 @@
   <link rel="manifest" href="manifest.webmanifest" />
   <meta name="theme-color" content="#111827" />
   <style>
-    body { font-family: system-ui,-apple-system,Segoe UI,Roboto; margin:0; padding:16px; background:#fff; color:#111827; }
-    header { font-weight:700; font-size:18px; margin-bottom:12px; }
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Apple SD Gothic Neo,Noto Sans KR;
+           margin:0; padding:16px; background:#fff; color:#111827; }
+    header { font-weight:800; font-size:20px; margin:8px 0 16px; }
     .card { border:1px solid #e5e7eb; border-radius:12px; padding:16px; }
-    button { padding:12px 16px; border-radius:10px; border:0; background:#111827; color:#fff; font-weight:600; }
-    video, canvas { width:100%; border:1px solid #e5e7eb; border-radius:8px; }
-    /* 가로(와이드) 프리뷰 */
-    #preview, #snapshot { width:100%; aspect-ratio:16/7; object-fit:cover; }
+    button { padding:12px 16px; border-radius:12px; border:0; background:#111827; color:#fff; font-weight:700; }
+    video, canvas { width:100%; border:1px solid #e5e7eb; border-radius:10px; display:block; }
+    /* 택배송장 가로 프레임 */
+    #preview, #snapshot { width:100%; aspect-ratio:16/7; object-fit:cover; background:#000; }
+    .label { font-weight:700; font-size:18px; margin:0 0 12px; }
   </style>
-  <!-- QR 디코더 -->
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 </head>
 <body>
   <header>유축기 출고 스캔 (PWA)</header>
 
   <div class="card">
-    <p>카메라 테스트</p>
+    <p class="label">카메라 테스트</p>
     <video id="preview" autoplay playsinline muted></video>
-    <br/><br/>
+    <br/>
     <button id="captureBtn">사진 촬영</button>
 
-    <!-- 캡처 이미지 -->
     <canvas id="snapshot" style="display:none;margin-top:12px;"></canvas>
 
-    <!-- 인식 결과(엑셀 컬럼 순서와 동일) -->
-    <div id="ocrPanel" style="display:none;margin-top:12px;">
-      <div style="font-weight:600;margin-bottom:8px;">인식 결과 (확인 후 저장)</div>
-      <div style="line-height:1.8">
+    <!-- 인식 결과 패널 -->
+    <div id="ocrPanel" style="display:none;margin-top:16px;">
+      <div style="font-weight:800;margin-bottom:8px;">인식 결과 (확인 후 저장)</div>
+      <div style="line-height:1.9">
         출고일: <span id="r_shipDate">-</span><br/>
         대여자명: <span id="r_name">-</span> / 전화: <span id="r_phone">-</span><br/>
         주소: <span id="r_addr">-</span><br/>
         기종: <span id="r_model">-</span> / 기기번호: <span id="r_deviceId">-</span><br/>
         송장번호: <span id="r_invoice">-</span>
       </div>
-      <button id="confirmBtn">확인 (엑셀 저장)</button>
+      <button id="confirmBtn" style="margin-top:12px;">확인 (엑셀 저장)</button>
     </div>
   </div>
 
   <script>
   const API_BASE = "https://rent-label-api-client-docker.onrender.com";
 
-  // SW
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');
+  // 서비스워커
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js').catch(()=>{});
+  }
 
-  // 요소
   const video   = document.getElementById('preview');
   const canvas  = document.getElementById('snapshot');
   const ctx     = canvas.getContext('2d', { willReadFrequently: true });
   const panel   = document.getElementById('ocrPanel');
-  const capture = document.getElementById('captureBtn');
-  const confirm = document.getElementById('confirmBtn');
+  const btnOk   = document.getElementById('confirmBtn');
 
-  // 패널 필드
-  const f = {
-    shipDate: document.getElementById('r_shipDate'),
-    name:     document.getElementById('r_name'),
-    phone:    document.getElementById('r_phone'),
-    addr:     document.getElementById('r_addr'),
-    model:    document.getElementById('r_model'),
-    deviceId: document.getElementById('r_deviceId'),
-    invoice:  document.getElementById('r_invoice'),
-  };
+  const f_ship = document.getElementById('r_shipDate');
+  const f_name = document.getElementById('r_name');
+  const f_phone= document.getElementById('r_phone');
+  const f_addr = document.getElementById('r_addr');
+  const f_model= document.getElementById('r_model');
+  const f_devid= document.getElementById('r_deviceId');
+  const f_inv  = document.getElementById('r_invoice');
 
-  // 후면 우선 카메라
+  // 카메라(후면 우선)
   (async function startCamera(){
     try {
       const s = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' }}, audio:false });
       video.srcObject = s; await video.play(); return;
-    } catch {}
-    const s = await navigator.mediaDevices.getUserMedia({ video:true, audio:false });
-    video.srcObject = s; await video.play();
+    } catch(_) {}
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ video:true, audio:false });
+      video.srcObject = s; await video.play();
+    } catch(err) {
+      alert('카메라 접근 실패: ' + err);
+    }
   })();
 
-  // 오버레이(하단 바에 텍스트)
-  function overlay(result){
-    const pad=16, boxH=96;
+  // 캔버스 하단 요약 오버레이
+  function renderOverlayBand(r){
+    const pad=16, boxH=120;
     ctx.fillStyle='rgba(0,0,0,0.55)';
-    ctx.fillRect(0, canvas.height-boxH, canvas.width, boxH);
+    ctx.fillRect(0, canvas.height - boxH, canvas.width, boxH);
+
     ctx.fillStyle='#fff';
     ctx.font='16px system-ui';
-    const line = `기종: ${result.model||'미인식'} / 기기번호: ${result.deviceId||'미인식'}`;
-    ctx.fillText(line, pad, canvas.height - boxH + pad + 6);
+    const lines = [
+      `기종: ${r.model || '미인식'} / 기기번호: ${r.deviceId || '미인식'}`,
+      `수령인: ${r.name || '미인식'} / 전화: ${r.phone || '미인식'}`,
+      `주소: ${r.addr || '미인식'} / 송장: ${r.invoice || '미인식'}`
+    ];
+    lines.forEach((t,i)=>ctx.fillText(t, pad, canvas.height - boxH + pad + i*24));
   }
 
-  // 패널 채우기
-  function fillPanel(r){
-    f.shipDate.textContent = r.shipDate || '-';
-    f.name.textContent     = r.name     || '-';
-    f.phone.textContent    = r.phone    || '-';
-    f.addr.textContent     = r.addr     || '-';
-    f.model.textContent    = r.model    || '-';
-    f.deviceId.textContent = r.deviceId || '-';
-    f.invoice.textContent  = r.invoice  || '-';
-    panel.style.display = 'block';
+  // 결과 패널 채우기
+  function populatePanel(r){
+    f_ship.textContent = r.shipDate || '-';
+    f_name.textContent = r.name || '-';
+    f_phone.textContent= r.phone || '-';
+    f_addr.textContent = r.addr || '-';
+    f_model.textContent= r.model || '-';
+    f_devid.textContent= r.deviceId || '-';
+    f_inv.textContent  = r.invoice || '-';
+    panel.style.display='block';
   }
 
-  // QR 텍스트 → 기종/기기번호 추출(규칙: sm12345678 형태 가정)
-  function pickDeviceFromQR(text){
-    if (!text) return {};
-    const t = String(text).toLowerCase().replace(/\s+/g,'');
-    const m = t.match(/sm[-_]?(\d{5,})/i);  // sm123456.. 패턴
-    return {
-      model:    'Symphony',               // 규칙 명확해지면 교체
-      deviceId: m ? `SM${m[1]}` : ''
-    };
+  // QR 근처 배지
+  function drawBadgeNearQR(qrText, loc){
+    const tl=loc.topLeftCorner, bl=loc.bottomLeftCorner;
+    const badgeX = Math.min(tl.x, bl.x);
+    const badgeY = Math.max(tl.y, bl.y) + 10;
+
+    const text = qrText;
+    ctx.font='24px system-ui';
+    const pad=8, textW=ctx.measureText(text).width, boxH=34;
+
+    ctx.fillStyle='rgba(0,0,0,0.65)';
+    ctx.fillRect(badgeX, badgeY, textW+pad*2, boxH);
+    ctx.fillStyle='#fff';
+    ctx.fillText(text, badgeX+pad, badgeY+24);
   }
 
-  // 촬영 → 즉시 QR에서 기종/기기번호 추출 & 오버레이
-  capture.addEventListener('click', () => {
+  // 사진 촬영
+  document.getElementById('captureBtn').addEventListener('click', ()=>{
     const w = video.videoWidth, h = video.videoHeight;
     if (!w || !h) return alert('카메라 초기화 대기 후 다시 시도');
 
-    canvas.width = w; canvas.height = h;
+    canvas.width=w; canvas.height=h;
     ctx.drawImage(video, 0, 0, w, h);
-    canvas.style.display = 'block';
+    canvas.style.display='block';
 
-    // 기본값(출고일 = 오늘)
-    const base = { shipDate: new Date().toISOString().slice(0,10) };
-
-    // QR 해석
+    // 1) QR 즉시 인식 → 기종/기기번호 산출 + 배지표기
+    let deviceId='', model='';
     try {
-      const imageData = ctx.getImageData(0,0,w,h);
-      const code = jsQR(imageData.data, w, h);
-      const parsed = pickDeviceFromQR(code && code.data);
-      const result = { ...base, ...parsed };
-      overlay(result);        // 이미지 하단에 "기종/기기번호" 표기
-      fillPanel(result);      // 패널에도 반영(나머지는 - 로 둠)
-    } catch {
-      fillPanel(base);
-    }
+      const imgData = ctx.getImageData(0,0,canvas.width,canvas.height);
+      const qr = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts:'dontInvert' });
+      if (qr && qr.data) {
+        const m = qr.data.match(/SM\d{7,9}|S\d{6,9}/i);
+        if (m) {
+          deviceId = m[0].toUpperCase();
+          if (deviceId.startsWith('SM')) model='Symphony';
+          else if (deviceId.startsWith('S6')) model='S6';
+          drawBadgeNearQR(`${model || '-'} / ${deviceId}`, qr.location);
+        }
+      }
+    } catch(_){}
+
+    // 2) 화면 즉시 채움(서버 응답 전)
+    const now = new Date().toISOString().slice(0,10);
+    const immediate = { shipDate: now, name:'-', phone:'-', addr:'-', model, deviceId, invoice:'-' };
+    renderOverlayBand(immediate);
+    populatePanel(immediate);
   });
 
-  // 확인(엑셀 저장) → 서버 OCR 호출 후 전체 필드 갱신 + 저장
-  confirm.addEventListener('click', () => {
-    if (canvas.style.display === 'none') return alert('캡처된 이미지가 없습니다.');
+  // 확인(엑셀 저장) → 서버 OCR 호출
+  btnOk.addEventListener('click', ()=>{
+    canvas.toBlob(async (blob)=>{
+      const fd = new FormData();
+      fd.append('image', blob, 'capture.jpg');
+      fd.append('qr_text', ''); // 서버에서 필요 시 활용
 
-    canvas.toBlob(async (blob) => {
       try{
-        const fd = new FormData();
-        fd.append('image', blob, 'capture.jpg');
-        fd.append('qr_text', ''); // 서버 기본값 처리
-
         const res = await fetch(`${API_BASE}/process-ocr/`, { method:'POST', body:fd });
-        if (!res.ok) throw new Error(`서버 오류(${res.status})`);
+        if (!res.ok) throw new Error('서버 응답 오류 ' + res.status);
         const api = await res.json();
 
         const d = api.data || {};
         const mapped = {
-          shipDate: d['출고일'] || f.shipDate.textContent,
-          name:     d['대여자명'] || '',
-          phone:    d['전화번호'] || '',
-          addr:     d['주소']     || '',
-          deviceId: d['기기번호'] || f.deviceId.textContent,
-          model:    d['기종']     || f.model.textContent,
-          invoice:  d['송장번호'] || ''
+          shipDate: d['출고일']   || f_ship.textContent,
+          name:     d['대여자명'] || f_name.textContent,
+          phone:    d['전화번호'] || f_phone.textContent,
+          addr:     d['주소']     || f_addr.textContent,
+          deviceId: d['기기번호'] || f_devid.textContent,
+          model:    d['기종']     || f_model.textContent,
+          invoice:  d['송장번호'] || f_inv.textContent
         };
 
-        // 새 오버레이로 덮어쓰기
+        // 오버레이 갱신
         ctx.drawImage(canvas, 0, 0); // 배경 유지
-        overlay(mapped);
-        fillPanel(mapped);
+        renderOverlayBand(mapped);
+        populatePanel(mapped);
 
-        alert(api.status === 'success' ? 'OCR 완료 및 엑셀 저장 성공' :
-              'OCR 처리됨 (엑셀 저장 오류 가능): ' + JSON.stringify(api.write_error || {}));
+        alert(api.status === 'success'
+          ? 'OCR 완료 및 엑셀 저장 성공'
+          : 'OCR 처리됨 (엑셀 저장 오류 가능): ' + JSON.stringify(api.write_error || {}));
       }catch(err){
         alert('서버 전송 실패: ' + err.message);
       }
@@ -178,4 +196,5 @@
   </script>
 </body>
 </html>
+
 
