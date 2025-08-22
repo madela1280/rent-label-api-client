@@ -140,7 +140,6 @@ function scanQRFromCanvas() {
   } catch { return { text:'', loc:null }; }
 }
 
-/* ===== 사진 촬영 → QR 인식 → 배지/패널 즉시 반영 ===== */
 document.getElementById('captureBtn').addEventListener('click', () => {
   const w = video.videoWidth, h = video.videoHeight;
   if (!w || !h) return alert('카메라 초기화 대기 후 다시 시도');
@@ -149,29 +148,21 @@ document.getElementById('captureBtn').addEventListener('click', () => {
   ctx.drawImage(video, 0, 0, w, h);
   canvas.style.display = 'block';
 
-  // 기본값 먼저 채움
   const base = {
     shipDate: new Date().toISOString().slice(0,10),
     name:'-', phone:'-', addr:'-', model:'-', deviceId:'-', invoice:'-'
   };
 
-  // QR 스캔(프레임 전체)
-  const { text, loc } = scanQRFromCanvas();
-  lastQrLoc = loc;
+  const { text } = scanQRFromCanvas();
 
   if (text) {
     const md = parseModelDevice(text);
     base.model = md.model; base.deviceId = md.deviceId;
 
-    // 배지 좌표: QR 좌하단 근처(하단으로 10px 내림), 화면 밖 보정
-    if (loc) {
-      const tl = loc.topLeftCorner, bl = loc.bottomLeftCorner;
-      badgePos = { x: Math.min(tl.x, bl.x), y: Math.max(tl.y, bl.y) + 10 };
-    } else {
-      badgePos = { x: 24, y: 24 };
-    }
+    // ← 좌측 상단 고정
     badgeText = `${base.model} / ${base.deviceId}`;
-    drawBadge(badgeText, badgePos.x, badgePos.y);   // ← 즉시 사진에 스탬프
+    badgePos  = { x: 24, y: 24 };
+    drawBadge(badgeText, badgePos.x, badgePos.y);
   } else {
     badgeText = '';
     badgePos  = { x:24, y:24 };
