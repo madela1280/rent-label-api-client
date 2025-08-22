@@ -302,15 +302,19 @@ def excel_append(
 
 # --- 사진 + OCR + OneDrive 엑셀 쓰기 ---
 @app.post("/process-ocr/")
-async def process_ocr(qr_text: str = Form(""), image: UploadFile = File(...), dry: int = Form(0)):
+async def process_ocr(
+    qr_text: str = Form(""),
+    image: UploadFile = File(...),
+    dry: int = Form(0)
+):
     temp_path = f"temp_{image.filename}"
     with open(temp_path, "wb") as f:
         shutil.copyfileobj(image.file, f)
     try:
-        # 1) OCR 수행
+        # 1) OCR
         result = make_final_entry(qr_text, temp_path)
 
-        # 2) 엑셀에 쓸 배열로 변환 (빈 값 허용)
+        # 2) 엑셀 행
         row = [
             result.get("출고일", ""),
             result.get("대여자명", ""),
@@ -321,10 +325,15 @@ async def process_ocr(qr_text: str = Form(""), image: UploadFile = File(...), dr
             result.get("송장번호", ""),
         ]
 
-        # 3) OneDrive에 기록
-        # 3) (미리보기면 저장 생략) OneDrive 기록
-# 미리보기 응답
-return {"status": "preview", "data": result}
+        # 3) 미리보기면 저장 생략
+        if dry:
+            return {"status": "preview", "data": result}
+
+        # 4) 저장
+        ok, info = write_row_to_onedrive(row)
+        if not ok:
+            return {"status": "ocr_ok_but_write_failed", "data": result, "write_error": info}
+        return {"status": "success", "data": result, "write_info": info}
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
