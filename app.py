@@ -323,11 +323,6 @@ async def process_ocr(qr_text: str = Form(""), image: UploadFile = File(...), dr
 
         # 3) OneDrive에 기록
         # 3) (미리보기면 저장 생략) OneDrive 기록
-if not dry:
-    ok, info = write_row_to_onedrive(row)
-    if not ok:
-        return {"status": "ocr_ok_but_write_failed", "data": result, "write_error": info}
-    return {"status": "success", "data": result, "write_info": info}
 # 미리보기 응답
 return {"status": "preview", "data": result}
     finally:
