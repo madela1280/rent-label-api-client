@@ -151,43 +151,61 @@ def _crop_invoice_roi(path: str) -> Image.Image:
 # 4) 텍스트 → 필드 파싱
 # =========================
 def _parse_fields(lines: List[str]) -> dict:
+    """
+    규칙(사용자 제공):
+    - 대여자명: 전화번호 '바로 앞'에 있고 그 줄의 맨 앞부터 시작 (다른 것 없음)
+    - 주소: 대여자명 있는 줄 '바로 아래 줄'에서 시작
+    - 송장번호: 대여자명 줄 '위쪽(한 칸 위 근처)', 파란 박스 바로 위
+    """
     invoice, phone, name, addr = "", "", "", ""
+    phone_idx = -1
 
+    # 1) 전화번호 줄 먼저 찾기 (010- / 050x- 포함, **** 허용)
+    phone_pat = re.compile(r'(?:01[016789]|05\d{2})[-\s]?\d{3,4}[-\s]?(?:\d{4}|\*{4})')
     for i, ln in enumerate(lines):
-        # 송장번호
-        if not invoice:
-            m = re.search(r'(\d{4})[-\s]?(\d{4})[-\s]?(\d{4})', ln)
-            if m and not m.group(1).startswith("05"):   # 0507-xxxx-xxxx 제외
-                invoice = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+        m = phone_pat.search(ln)
+        if m:
+            raw_phone = m.group()
+            phone = _normalize_phone(raw_phone)
+            # 이름 = 전화번호 '바로 앞' 내용(레이블 제거)
+            left = ln[:m.start()].strip()
+            left = re.sub(r"[|\[\](){}.,;:]+", "", left)
+            left = re.sub(r"^(받는.?|수령인|수취인)\s*", "", left, flags=re.I).strip()
+            name = left
+            phone_idx = i
+            break
 
-        # 전화번호
-        if not phone:
-            m = re.search(r'(01[016789]|05\d{2})[-\s]?\d{3,4}[-\s]?(?:\d{4}|\*{4})', ln)
-            if m:
-                phone = m.group().replace(" ", "").replace("--", "-")
-                # 이름: 전화 앞부분
-                left = ln.split(m.group())[0].strip()
-                left = re.sub(r"[\[\](){}|,.;:]+", "", left).strip()
-                if _likely_name(left):
-                    name = left
-                # 주소: 전화 있는 줄 다음 줄
-                if i + 1 < len(lines):
-                    nxt = lines[i + 1].strip()
-                    if _is_address(nxt):
-                        addr = nxt
+    # 2) 주소: 전화 줄 '바로 다음 줄' 우선, 이어지는 라인 일부 병합
+    if phone_idx >= 0:
+        if phone_idx + 1 < len(lines):
+            addr = lines[phone_idx + 1].strip()
+        # 다음 줄이 주소 계속일 가능성(동/호/아파트/로/길/숫자 등) 있으면 한 줄 더 붙임
+        if phone_idx + 2 < len(lines):
+            cont = lines[phone_idx + 2].strip()
+            if _is_address(cont) or re.search(r"(동|호|아파트|빌라|로|길|\d)", cont):
+                addr = (addr + " " + cont).strip()
 
-    # 이름 보정
-    if not name:
-        for ln in lines:
-            if _likely_name(ln):
-                name = ln.strip()
+    # 3) 송장번호: 이름 줄 '위쪽'에서 가까운 줄부터 검색 (05 시작 제외)
+    if phone_idx >= 0:
+        for j in range(phone_idx - 1, max(-1, phone_idx - 4), -1):
+            iv = _normalize_invoice(lines[j])
+            if iv:
+                invoice = iv
                 break
 
-    # 주소 보정
-    if not addr:
-        addr_candidates = [ln.strip() for ln in lines if _is_address(ln)]
-        if addr_candidates:
-            addr = max(addr_candidates, key=len)
+    # 4) 폴백(전화/송장 못 찾았을 때만 전체 스캔)
+    if not phone:
+        for ln in lines:
+            ph = _normalize_phone(ln)
+            if ph:
+                phone = ph
+                break
+    if not invoice:
+        for ln in lines:
+            iv = _normalize_invoice(ln)
+            if iv:
+                invoice = iv
+                break
 
     return {
         "송장번호": invoice,
@@ -195,7 +213,6 @@ def _parse_fields(lines: List[str]) -> dict:
         "대여자명": name,
         "주소": addr,
     }
-
 
 # =========================
 # 5) QR → 기종/기기번호 매핑
