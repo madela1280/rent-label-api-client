@@ -186,10 +186,18 @@ def manifest():
 def sw():
     return FileResponse(os.path.join(BASE_DIR, "sw.js"))
 
-# 콜백 경로 변형 대응
-@app.get("/callback/")              async def callback_slash(request: Request): return await callback(request)
-@app.get("/login/callback")         async def callback_login(request: Request): return await callback(request)
-@app.get("/login/callback/")        async def callback_login2(request: Request): return await callback(request)
+# 콜백 경로 변형 대응 (줄바꿈 필수)
+@app.get("/callback/")
+async def callback_slash(request: Request):
+    return await callback(request)
+
+@app.get("/login/callback")
+async def callback_login(request: Request):
+    return await callback(request)
+
+@app.get("/login/callback/")
+async def callback_login2(request: Request):
+    return await callback(request)
 
 # -------------------------------
 # Graph Helper
