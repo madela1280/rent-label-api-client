@@ -48,47 +48,47 @@ def _ocr_text(img: Image.Image, allow_kor: bool = True) -> str:
     return pytesseract.image_to_string(img, config=cfg, lang=lang)
 
 
+def _resize_image(img: Image.Image, max_w: int = 1600) -> Image.Image:
+    """너무 큰 이미지는 축소하여 OCR 속도 개선"""
+    w, h = img.size
+    if w > max_w:
+        scale = max_w / float(w)
+        return img.resize((max_w, int(h * scale)))
+    return img
+
+
 # =========================
 # 2) 정규식/정규화
 # =========================
-INVOICE_RE = re.compile(r"(\d{4})[- ]?(\d{4})[- ]?(\d{4})")  # 12자리 송장
-PHONE_RE = re.compile(
-    r"((?:01[016789]|05\d{2})[- ]?\d{3,4}[- ]?(?:\d{4}|\*{4}))"
-)  # 010-1234-5678 | 010-1234-**** | 0503-1234-5678
-
-ADDR_TOKENS = ("시", "군", "구", "동", "읍", "면", "로", "길", "번지", "아파트", "단지", "호", "리", "층")
-
+INVOICE_RE = re.compile(r"(\d{4})[- ]?(\d{4})[- ]?(\d{4})")
+PHONE_RE   = re.compile(r"((?:01[016789]|05\d{2})[- ]?\d{3,4}[- ]?(?:\d{4}|\*{4}))")
 
 def _normalize_invoice(s: str) -> str:
     s = s.replace("—", "-").replace("–", "-")
     m = INVOICE_RE.search(s)
     if not m:
         return ""
+    # 050x-xxxx-xxxx 처럼 첫 그룹이 05로 시작하면 송장으로 취급하지 않음
+    if m.group(1).startswith("05"):
+        return ""
     return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+
+
+def _likely_name(s: str) -> bool:
+    """순수 한글 2~4자 → 이름으로 가정"""
+    return bool(re.fullmatch(r"[가-힣]{2,4}", s))
+
+
+def _is_address(s: str) -> bool:
+    """주소 판별 간단 로직"""
+    return any(tok in s for tok in ["시", "군", "구", "읍", "면", "동", "리", "로", "길"])
 
 
 def _normalize_phone(s: str) -> str:
     m = PHONE_RE.search(s)
-    return m.group(1).replace(" ", "") if m else ""
-
-
-def _likely_name(line: str) -> bool:
-    """이름 후보: 특수문자/숫자 거의 없음, 한글 2~6자 정도 권장(외국인 이름 고려하여 느슨하게)."""
-    t = line.strip()
-    if not t:
-        return False
-    if re.search(r"[0-9()\/\-*]", t):
-        return False
-    han = re.sub(r"[^가-힣]", "", t)
-    # 한글이 2자 이상이거나, 전체 길이가 2~10자 내외면 후보로 인정
-    return (len(han) >= 2 and len(t) <= 10) or (2 <= len(t) <= 10 and not re.search(r"[,.;]", t))
-
-
-def _is_address(line: str) -> bool:
-    t = line.strip()
-    if len(t) < 5:
-        return False
-    return any(tok in t for tok in ADDR_TOKENS)
+    if not m:
+        return ""
+    return m.group().replace(" ", "").replace("--", "-")
 
 
 # =========================
@@ -154,13 +154,13 @@ def _parse_fields(lines: List[str]) -> dict:
     invoice, phone, name, addr = "", "", "", ""
 
     for i, ln in enumerate(lines):
-        # 1) 송장번호 (####-####-####)
+        # 송장번호
         if not invoice:
             m = re.search(r'(\d{4})[-\s]?(\d{4})[-\s]?(\d{4})', ln)
-            if m:
+            if m and not m.group(1).startswith("05"):   # 0507-xxxx-xxxx 제외
                 invoice = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
 
-        # 2) 전화번호 (010-1234-5678 / 010-1234-**** / 0503-1234-5678)
+        # 전화번호
         if not phone:
             m = re.search(r'(01[016789]|05\d{2})[-\s]?\d{3,4}[-\s]?(?:\d{4}|\*{4})', ln)
             if m:
@@ -176,14 +176,14 @@ def _parse_fields(lines: List[str]) -> dict:
                     if _is_address(nxt):
                         addr = nxt
 
-    # 3) 이름 보정: 여전히 없으면 순수 한글 후보 찾기
+    # 이름 보정
     if not name:
         for ln in lines:
             if _likely_name(ln):
                 name = ln.strip()
                 break
 
-    # 4) 주소 보정: 없으면 주소 토큰 포함된 가장 긴 줄 선택
+    # 주소 보정
     if not addr:
         addr_candidates = [ln.strip() for ln in lines if _is_address(ln)]
         if addr_candidates:
@@ -195,6 +195,7 @@ def _parse_fields(lines: List[str]) -> dict:
         "대여자명": name,
         "주소": addr,
     }
+
 
 # =========================
 # 5) QR → 기종/기기번호 매핑
@@ -227,6 +228,7 @@ def _map_model_device(qr_text: str) -> Tuple[str, str]:
 def make_final_entry(qr_text: str, 송장_image_path: str):
     # ROI 자르기
     roi = _crop_invoice_roi(송장_image_path)
+    roi = _resize_image(roi, 1600)
 
     # 디버그 저장 (ROI 이미지)
     try:
@@ -235,9 +237,9 @@ def make_final_entry(qr_text: str, 송장_image_path: str):
     except Exception:
         pass
 
-    # OCR: 약하게 → 부족하면 강하게 재시도
+    # OCR: 약하게 → strong은 결과 짧을 때만
     txt = _ocr_text(_preprocess(roi, strong=False))
-    if len(re.sub(r"\s+", "", txt)) < 8:
+    if len(re.sub(r"\s+", "", txt)) < 20:   # 20자 미만이면 strong OCR
         txt = _ocr_text(_preprocess(roi, strong=True))
 
     # 디버그 저장 (OCR 라인)
@@ -269,7 +271,7 @@ def make_final_entry(qr_text: str, 송장_image_path: str):
         "송장번호": parsed.get("송장번호", ""),
     }
 
-    # 보정: 전화는 있는데 이름이 비었을 경우 한 번 더 시도
+    # 보정: 전화는 있는데 이름이 비었을 경우
     if out["전화번호"] and not out["대여자명"]:
         for ln in lines:
             if out["전화번호"] in ln:
@@ -281,3 +283,50 @@ def make_final_entry(qr_text: str, 송장_image_path: str):
                     break
 
     return out
+
+def make_final_entry_fast(qr_text: str, 송장_image_path: str):
+    """
+    초고속 프리뷰:
+    - ROI 자름 → 가로 1024로 축소
+    - 숫자 전용 OCR(영문만, whitelist)로 '송장번호/전화' 우선 추출
+    - 송장번호는 '05'로 시작하면 제외
+    - 이름/주소는 비워둘 수 있음(필요 최소만 빠르게)
+    """
+    # ROI + 축소
+    roi = _crop_invoice_roi(송장_image_path)
+    roi = _resize_image(roi, 1024)
+
+    # 숫자 전용 OCR (빠름)
+    cfg_fast = "--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789-"
+    txt_num = pytesseract.image_to_string(_preprocess(roi, strong=False), config=cfg_fast, lang="eng")
+    lines_num = [ln.strip() for ln in txt_num.splitlines() if ln.strip()]
+
+    # 기본 값
+    ship_date = date.today().isoformat()
+    model, device_id = _map_model_device(qr_text)
+    invoice, phone = "", ""
+
+    # 숫자만으로 송장/전화 추출
+    for ln in lines_num:
+        if not phone:
+            m = re.search(r'(01[016789]|05\d{2})[-]?\d{3,4}[-]?(?:\d{4}|\*{4})', ln)
+            if m:
+                phone = re.sub(r'\s+', '', m.group()).replace('--', '-')
+        if not invoice:
+            m = re.search(r'(\d{4})[-]?(\d{4})[-]?(\d{4})', ln)
+            if m and not m.group(1).startswith('05'):  # 05로 시작하면 송장 제외
+                invoice = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+        if phone and invoice:
+            break
+
+    return {
+        "출고일": ship_date,
+        "대여자명": "",
+        "전화번호": phone,
+        "주소": "",
+        "기기번호": device_id,
+        "기종": model,
+        "송장번호": invoice,
+    }
+
+

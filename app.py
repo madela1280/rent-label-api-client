@@ -323,10 +323,14 @@ async def process_ocr(
     with open(temp_path, "wb") as f:
         shutil.copyfileobj(image.file, f)
     try:
-        # 1) OCR
+        if dry:
+            # 빠른 미리보기: 숫자 전용 OCR로 송장/전화 우선 추출
+            result = make_final_entry_fast(qr_text, temp_path)
+            return {"status": "preview", "data": result}
+
+        # 정식 저장: 전체 OCR
         result = make_final_entry(qr_text, temp_path)
 
-        # 2) 엑셀 행
         row = [
             result.get("출고일", ""),
             result.get("대여자명", ""),
@@ -337,11 +341,6 @@ async def process_ocr(
             result.get("송장번호", ""),
         ]
 
-        # 3) 미리보기면 저장 생략
-        if dry:
-            return {"status": "preview", "data": result}
-
-        # 4) 저장
         ok, info = write_row_to_onedrive(row)
         if not ok:
             return {"status": "ocr_ok_but_write_failed", "data": result, "write_error": info}
