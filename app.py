@@ -15,7 +15,7 @@ import httpx
 import requests
 import msal
 
-from ocr_utils import make_final_entry, make_preview_entry
+from ocr_utils import make_final_entry, make_final_entry_fast
 from excel_utils import append_row_to_excel
 APP_VERSION = os.getenv("APP_VERSION", "2025-08-25-02")
 
