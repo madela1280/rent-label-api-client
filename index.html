@@ -206,49 +206,84 @@ canvas.toBlob(async (blob) => {
 });
 
 /* ===== 확인(엑셀 저장) → 서버 OCR 호출 ===== */
-document.getElementById('confirmBtn').addEventListener('click', () => {
+// 파일 상단 근처 전역
+let ocrPreview = null;
+let ocrRunning = false;
+
+// 촬영 직후 OCR 프리뷰 요청 (이미 넣은 위치 그대로 사용, 아래 3줄 추가/변경)
+if (ocrRunning) { /* 중복 방지 */ } 
+ocrRunning = true;
+canvas.toBlob(async (blob) => {
+  const fd = new FormData();
+  const { text:qr } = scanQRFromCanvas();
+  fd.append('image', blob, 'capture.jpg');
+  fd.append('qr_text', qr || '');
+  fd.append('dry', 1);
+
+  try {
+    const res = await fetch(`${API_BASE}/process-ocr/`, { method:'POST', body:fd });
+    const api = await res.json();
+    const d = api.data || {};
+    const merged = {
+      shipDate: d['출고일']   || base.shipDate,
+      name:     d['대여자명'] || base.name,
+      phone:    d['전화번호'] || base.phone,
+      addr:     d['주소']     || base.addr,
+      deviceId: d['기기번호'] || base.deviceId,
+      model:    d['기종']     || base.model,
+      invoice:  d['송장번호'] || base.invoice
+    };
+    ocrPreview = merged;          // ← 프리뷰 보관
+    populatePanel(merged);
+  } catch(e) {
+    console.log('OCR 프리뷰 실패', e);
+  } finally {
+    ocrRunning = false;
+  }
+}, 'image/jpeg');
+
+
+// ===== 확인(엑셀 저장) → 재-OCR 금지, 바로 /excel/upload =====
+document.getElementById('confirmBtn').addEventListener('click', async () => {
   if (!canvas.width) return alert('캡처된 이미지가 없습니다.');
   const btn = document.getElementById('confirmBtn');
   btn.disabled = true;
 
-  // 업로드 직전, 저장용 사진에 배지를 한 번 더 찍어 확정(누락 방지)
+  // 배지 확정(이미지 저장에는 영향 없지만 화면 일관성 유지)
   const label = badgeText || `${r_model.textContent} / ${r_deviceId.textContent}`;
   if (label.trim() !== '/') drawBadge(label, badgePos.x, badgePos.y);
 
-  canvas.toBlob(async (blob) => {
-    const fd = new FormData();
-    const { text:qr } = scanQRFromCanvas();
-    fd.append('image', blob, 'capture.jpg');
-    fd.append('qr_text', qr || '');
+  // 프리뷰가 없으면 화면 값으로 구성
+  const payload = ocrPreview || {
+    shipDate: r_shipDate.textContent,
+    name:     r_name.textContent,
+    phone:    r_phone.textContent,
+    addr:     r_addr.textContent,
+    deviceId: r_deviceId.textContent,
+    model:    r_model.textContent,
+    invoice:  r_invoice.textContent
+  };
 
-    try {
-      const res = await fetch(`${API_BASE}/process-ocr/`, { method:'POST', body:fd });
-      const api = await res.json();
+  try {
+    const res = await fetch(`${API_BASE}/excel/upload`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const api = await res.json();
 
-      const d = api.data || {};
-      const merged = {
-        shipDate: d['출고일']   || r_shipDate.textContent,
-        name:     d['대여자명'] || r_name.textContent,
-        phone:    d['전화번호'] || r_phone.textContent,
-        addr:     d['주소']     || r_addr.textContent,
-        deviceId: d['기기번호'] || r_deviceId.textContent,
-        model:    d['기종']     || r_model.textContent,
-        invoice:  d['송장번호'] || r_invoice.textContent
-      };
-
-      // 패널 갱신(배지는 기종/기기번호만 유지)
-      populatePanel(merged);
-
-      alert(api.status === 'success'
-        ? 'OCR 완료 및 엑셀 저장 성공'
-        : 'OCR 처리됨 (엑셀 저장 오류 가능): ' + JSON.stringify(api.write_error || {}));
-    } catch (e) {
-      alert('서버 전송 실패: ' + e.message);
-    } finally {
-      btn.disabled = false;
+    if (res.ok && api.status === 'ok') {
+      alert('엑셀 저장 성공');
+    } else {
+      alert('엑셀 저장 실패: ' + JSON.stringify(api));
     }
-  }, 'image/jpeg');
+  } catch (e) {
+    alert('서버 전송 실패: ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
 });
+
 </script>
 </body>
 </html>
