@@ -153,52 +153,41 @@ def _crop_invoice_roi(path: str) -> Image.Image:
 def _parse_fields(lines: List[str]) -> dict:
     invoice, phone, name, addr = "", "", "", ""
 
-    # 1) 송장/전화 먼저
-    for ln in lines:
+    for i, ln in enumerate(lines):
+        # 1) 송장번호 (####-####-####)
         if not invoice:
-            iv = _normalize_invoice(ln)
-            if iv:
-                invoice = iv
-        if not phone:
-            ph = _normalize_phone(ln)
-            if ph:
-                phone = ph
-        if invoice and phone:
-            break
+            m = re.search(r'(\d{4})[-\s]?(\d{4})[-\s]?(\d{4})', ln)
+            if m:
+                invoice = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
 
-    # 2) 이름: 전화가 포함된 라인의 좌측 토큰 우선
-    if phone:
-        for ln in lines:
-            if phone in ln:
-                left = ln.split(phone)[0].strip()
-                left = left.split("/")[-1].strip()
+        # 2) 전화번호 (010-1234-5678 / 010-1234-**** / 0503-1234-5678)
+        if not phone:
+            m = re.search(r'(01[016789]|05\d{2})[-\s]?\d{3,4}[-\s]?(?:\d{4}|\*{4})', ln)
+            if m:
+                phone = m.group().replace(" ", "").replace("--", "-")
+                # 이름: 전화 앞부분
+                left = ln.split(m.group())[0].strip()
                 left = re.sub(r"[\[\](){}|,.;:]+", "", left).strip()
                 if _likely_name(left):
                     name = left
-                    break
+                # 주소: 전화 있는 줄 다음 줄
+                if i + 1 < len(lines):
+                    nxt = lines[i + 1].strip()
+                    if _is_address(nxt):
+                        addr = nxt
 
+    # 3) 이름 보정: 여전히 없으면 순수 한글 후보 찾기
     if not name:
-        # 순수 한글 2~6자 또는 짧은 라인
         for ln in lines:
             if _likely_name(ln):
                 name = ln.strip()
                 break
 
-    # 3) 주소: 주소 토큰 들어간 가장 긴 줄을 중심으로 위/아래 인접 줄 병합
-    addr_candidates = [ln.strip() for ln in lines if _is_address(ln)]
-    if addr_candidates:
-        main = max(addr_candidates, key=len)
-        try:
-            idx = lines.index(main)
-        except ValueError:
-            idx = -1
-        parts = [main.strip()]
-        if 0 <= idx - 1 and _is_address(lines[idx - 1]):
-            parts.insert(0, lines[idx - 1].strip())
-        if 0 <= idx + 1 < len(lines) and _is_address(lines[idx + 1]):
-            parts.append(lines[idx + 1].strip())
-        # 중복 제거하면서 합치기
-        addr = " ".join(dict.fromkeys(parts))
+    # 4) 주소 보정: 없으면 주소 토큰 포함된 가장 긴 줄 선택
+    if not addr:
+        addr_candidates = [ln.strip() for ln in lines if _is_address(ln)]
+        if addr_candidates:
+            addr = max(addr_candidates, key=len)
 
     return {
         "송장번호": invoice,
@@ -206,7 +195,6 @@ def _parse_fields(lines: List[str]) -> dict:
         "대여자명": name,
         "주소": addr,
     }
-
 
 # =========================
 # 5) QR → 기종/기기번호 매핑
