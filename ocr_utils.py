@@ -225,25 +225,27 @@ def _map_model_device(qr_text: str) -> Tuple[str, str]:
 # 6) 메인 엔트리 (기존 시그니처 유지)
 # =========================
 def make_final_entry(qr_text: str, 송장_image_path: str):
-    """
-    반환 형식(dict) — 기존 키 그대로 유지:
-    {
-      '출고일': 'YYYY-MM-DD',
-      '대여자명': '...',
-      '전화번호': '...',
-      '주소': '...',
-      '기기번호': '...',
-      '기종': '...',
-      '송장번호': '...'
-    }
-    """
     # ROI 자르기
     roi = _crop_invoice_roi(송장_image_path)
+
+    # 디버그 저장 (ROI 이미지)
+    try:
+        os.makedirs("_debug", exist_ok=True)
+        roi.save(os.path.join("_debug", "roi.jpg"))
+    except Exception:
+        pass
 
     # OCR: 약하게 → 부족하면 강하게 재시도
     txt = _ocr_text(_preprocess(roi, strong=False))
     if len(re.sub(r"\s+", "", txt)) < 8:
         txt = _ocr_text(_preprocess(roi, strong=True))
+
+    # 디버그 저장 (OCR 라인)
+    try:
+        with open(os.path.join("_debug", "ocr_lines.txt"), "w", encoding="utf-8") as f:
+            f.write(txt)
+    except Exception:
+        pass
 
     lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
 
@@ -256,7 +258,7 @@ def make_final_entry(qr_text: str, 송장_image_path: str):
     # 출고일(서버 날짜)
     ship_date = date.today().isoformat()
 
-    # 결과(기존 흐름과 동일 키)
+    # 결과
     out = {
         "출고일": ship_date,
         "대여자명": parsed.get("대여자명", ""),
@@ -279,5 +281,3 @@ def make_final_entry(qr_text: str, 송장_image_path: str):
                     break
 
     return out
-
-
