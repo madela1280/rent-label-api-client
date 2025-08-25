@@ -282,25 +282,47 @@ def excel_append(row: list = Body(...)):
 # -------------------------------
 # OCR + Excel
 # -------------------------------
+# --- 사진 + OCR + OneDrive 엑셀 쓰기 ---
 @app.post("/process-ocr/")
-async def process_ocr(qr_text: str = Form(""), image: UploadFile = File(...), dry: int = Form(0)):
+async def process_ocr(
+    qr_text: str = Form(""),
+    image: UploadFile = File(...),
+    dry: int = Form(0),          # 1=초고속 프리뷰, 0=정식 OCR
+    no_write: int = Form(0)      # 1=정식 OCR 하되 "쓰기 없이" 결과만 반환(검토용)
+):
     temp_path = f"temp_{image.filename}"
-    with open(temp_path, "wb") as f: shutil.copyfileobj(image.file, f)
+    with open(temp_path, "wb") as f:
+        shutil.copyfileobj(image.file, f)
     try:
-        result = make_final_entry_fast(qr_text, temp_path) if dry else make_final_entry(qr_text, temp_path)
         if dry:
+            # 빠른 미리보기(숫자 위주)
+            result = make_final_entry_fast(qr_text, temp_path)
             return {"status": "preview", "data": result}
 
+        # 정식 OCR
+        result = make_final_entry(qr_text, temp_path)
+
+        # 요청이 no_write=1 이면, 엑셀 쓰지 않고 결과만 반환(촬영 직후 검토용)
+        if no_write:
+            return {"status": "review", "data": result}
+
+        # 여기서부터는 실제 쓰기
         row = [
-            result.get("출고일",""), result.get("대여자명",""), result.get("전화번호",""),
-            result.get("주소",""), result.get("기기번호",""), result.get("기종",""), result.get("송장번호",""),
+            result.get("출고일", ""),
+            result.get("대여자명", ""),
+            result.get("전화번호", ""),
+            result.get("주소", ""),
+            result.get("기기번호", ""),
+            result.get("기종", ""),
+            result.get("송장번호", ""),
         ]
         ok, info = write_row_to_onedrive(row)
         if not ok:
-            return {"status":"ocr_ok_but_write_failed","data":result,"write_error":info}
-        return {"status":"success","data":result,"write_info":info}
+            return {"status": "ocr_ok_but_write_failed", "data": result, "write_error": info}
+        return {"status": "success", "data": result, "write_info": info}
     finally:
-        if os.path.exists(temp_path): os.remove(temp_path)
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 @app.post("/preview-ocr")
 async def preview_ocr(qr_text: str = Form(""), image: UploadFile = File(...)):
