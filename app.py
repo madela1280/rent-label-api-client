@@ -304,34 +304,79 @@ def _get_drive_item_id(headers, file_name):
     return items[0]["id"]
 
 def write_row_to_onedrive(row):
-    token = _get_access_token(None)
+    """
+    - 워크북 세션을 열고(write-through) 그 세션으로만 작업
+    - 쓰기 후 즉시 읽어 검증까지 하고 결과(파일 링크, 시트, 범위) 반환
+    """
+    token = _get_access_token()
     if not token:
         return False, {"error": "no_access_token"}
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    item_id = _get_drive_item_id(headers, FILE_NAME)
+    base_headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    # 1) 대상 파일 찾기 (+ 링크)
+    item_id = _get_drive_item_id(base_headers, FILE_NAME)
     if not item_id:
         return False, {"error": "file_not_found", "file": FILE_NAME}
 
-    used = requests.get(
-        f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/usedRange",
-        headers=headers
+    meta = requests.get(
+        f"{GRAPH}/me/drive/items/{item_id}?$select=webUrl,name,parentReference",
+        headers=base_headers
     ).json()
-    address = used.get("address") or f"{SHEET_NAME}!A1:A1"
-    try:
-        last_row = int(address.split("!")[1].split(":")[1][1:])
-    except:
-        last_row = 1
-    next_row = last_row + 1
-    target = f"A{next_row}:G{next_row}"
+    web_url = meta.get("webUrl")
 
-    resp = requests.patch(
-        f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/range(address='{target}')",
-        headers=headers, json={"values": [row]}
+    # 2) 워크북 세션 생성 (persistChanges=True)
+    sess = requests.post(
+        f"{GRAPH}/me/drive/items/{item_id}/workbook/createSession",
+        headers=base_headers, json={"persistChanges": True}
     )
-    if resp.status_code != 200:
-        return False, {"error": "write_failed", "status": resp.status_code, "text": resp.text}
-    return True, {"range": target}
+    if sess.status_code not in (200, 201):
+        return False, {"error": "session_create_failed", "status": sess.status_code, "text": sess.text}
+    sid = sess.json().get("id")
+    headers = {**base_headers, "workbook-session-id": sid}
+
+    try:
+        # 3) 다음 행 계산
+        used = requests.get(
+            f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/usedRange",
+            headers=headers
+        ).json()
+        address = used.get("address") or f"{SHEET_NAME}!A1:A1"
+        try:
+            last_row = int(address.split("!")[1].split(":")[1][1:])
+        except Exception:
+            last_row = 1
+        next_row = last_row + 1
+        target = f"A{next_row}:G{next_row}"
+
+        # 4) 쓰기
+        wr = requests.patch(
+            f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/range(address='{target}')",
+            headers=headers, json={"values": [row]}
+        )
+        if wr.status_code != 200:
+            return False, {"error": "write_failed", "status": wr.status_code, "text": wr.text, "range": target}
+
+        # 5) 검증(바로 읽어 확인)
+        rd = requests.get(
+            f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/range(address='{target}')",
+            headers=headers
+        )
+        if rd.status_code != 200:
+            return False, {"error": "verify_read_failed", "status": rd.status_code, "text": rd.text, "range": target}
+        values = (rd.json() or {}).get("values") or []
+        verified = bool(values and values[0][:len(row)] == row)
+
+        if not verified:
+            return False, {"error": "verify_mismatch", "range": target, "read_back": values}
+
+        return True, {"range": target, "file_webUrl": web_url, "sheet": SHEET_NAME}
+
+    finally:
+        # 세션 종료는 옵션(미종료해도 서버가 정리). 명시 종료 원하면 주석 해제:
+        # requests.post(f"{GRAPH}/me/drive/items/{item_id}/workbook/closeSession",
+        #               headers=headers)
+        pass
 
 # ================================
 # OCR endpoints
