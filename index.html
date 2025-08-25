@@ -43,8 +43,29 @@
   </div>
 
 <script>
-if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js').catch(()=>{}); }
+const APP_VER = "2025-08-25-02";  // 배포할 때마다 증가
 const API_BASE = "https://rent-label-api-client-docker.onrender.com";
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js?ver=' + APP_VER).then(async (reg) => {
+    try {
+      await reg.update();
+      if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+      if (reg.installing) {
+        reg.installing.addEventListener('statechange', (e) => {
+          if (e.target.state === 'installed') {
+            reg.waiting?.postMessage({ type: 'SKIP_WAITING' });
+          }
+        });
+      }
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        location.reload(); // 새 SW가 컨트롤 시작하면 즉시 리로드
+      });
+    } catch (e) {
+      console.log('SW update error', e);
+    }
+  }).catch(()=>{});
+}
 
 /* ===== 요소 ===== */
 const video   = document.getElementById('preview');
@@ -72,9 +93,9 @@ function canvasToBlobResized(cb) {
     tmp.width = Math.round(canvas.width * scale);
     tmp.height = Math.round(canvas.height * scale);
     tmp.getContext('2d', { willReadFrequently: true }).drawImage(canvas, 0, 0, tmp.width, tmp.height);
-    tmp.toBlob(cb, 'image/jpeg', 0.7);
+    tmp.toBlob(cb, 'image/jpeg', 0.5);
   } else {
-    canvas.toBlob(cb, 'image/jpeg', 0.7);
+    canvas.toBlob(cb, 'image/jpeg', 0.5);
   }
 }
 

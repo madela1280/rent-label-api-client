@@ -17,6 +17,7 @@ import msal
 
 from ocr_utils import make_final_entry
 from excel_utils import append_row_to_excel
+APP_VERSION = os.getenv("APP_VERSION", "2025-08-25-02")
 
 # -------------------------------
 # FastAPI & Session
@@ -449,11 +450,13 @@ def excel_upload(payload: dict = Body(...)):
         return JSONResponse({"status": "error", "write_error": info}, status_code=500)
     return {"status": "ok", "range": info.get("range")}
 
+@app.get("/__version")
+def version():
+    return {"version": APP_VERSION}
+
 if __name__ == "__main__":
     import uvicorn, os
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-
-
 
 
 
