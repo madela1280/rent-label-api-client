@@ -127,13 +127,17 @@ async def callback(request: Request):
     except Exception:
         pass
 
-    # ✅ 세션은 가벼운 사용자 정보만
+       # ✅ 세션에 사용자 + 토큰 저장
     claims = result.get("id_token_claims", {}) or {}
     request.session.clear()
     request.session["user"] = {
         "name": claims.get("name"),
         "upn": claims.get("preferred_username"),
         "oid": claims.get("oid"),
+    }
+    request.session["tokens"] = {
+        "access_token": result.get("access_token", ""),
+        "refresh_token": result.get("refresh_token", ""),
     }
 
     return RedirectResponse("/me")
@@ -220,7 +224,14 @@ async def callback_login_path_slash(request: Request):
 # --- Graph 호출 테스트: refresh_token으로 access_token 갱신 후 /me 조회 ---
 SCOPES_GRAPH = ["User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All"]
 
-def _get_access_token():
+from typing import Optional
+from fastapi import Request
+
+def _get_access_token(request: Optional[Request] = None):
+    if request is not None:
+        tok = (request.session.get("tokens") or {}).get("access_token")
+        if tok:
+            return tok
     try:
         with open("access_token.txt", "r", encoding="utf-8") as f:
             t = f.read().strip()
@@ -229,8 +240,8 @@ def _get_access_token():
         return None
 
 @app.get("/graph/me")
-def graph_me():
-    token = _get_access_token()
+def graph_me(request: Request):
+    token = _get_access_token(request)
     if not token:
         return JSONResponse({"error": "no_access_token"}, status_code=401)
     headers = {"Authorization": f"Bearer {token}"}
@@ -238,8 +249,8 @@ def graph_me():
     return JSONResponse({"status": r.status_code, "json": r.json()})
 
 @app.get("/onedrive")
-def onedrive():
-    token = _get_access_token()
+def onedrive(request: Request):
+    token = _get_access_token(request)
     if not token:
         return JSONResponse({"error": "no_access_token"}, status_code=401)
     headers = {"Authorization": f"Bearer {token}"}
