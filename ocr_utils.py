@@ -1,9 +1,10 @@
 # ocr_utils.py
 # ------------------------------------------------------------
-# 기존 서버 흐름을 그대로 유지합니다.
-# - make_final_entry(qr_text, image_path) 시그니처/키 이름 동일
-# - 의존성: Pillow, pytesseract (OpenCV는 선택적)
-# - TESSERACT_CMD 환경변수로 실행 경로 지정 가능(없으면 기본값)
+# 전체 교체본 (한 줄도 생략 없음)
+# - make_final_entry(qr_text, image_path): 최종 OCR (한/영)
+# - make_final_entry_fast(qr_text, image_path): 초고속 프리뷰(숫자 위주)
+# - 송장번호 추출 비활성화 (항상 "")
+# - 규칙: 전화 바로 앞 = 대여자명, 전화 아래 = 주소
 # ------------------------------------------------------------
 
 import os
@@ -13,8 +14,6 @@ from typing import List, Tuple
 
 from PIL import Image, ImageOps, ImageFilter
 import pytesseract
-from pytesseract import image_to_data, Output
-from io import BytesIO
 
 # (선택) OpenCV가 있으면 ROI 탐지에 활용, 없으면 비율 기반으로 동작
 try:
@@ -24,8 +23,10 @@ except Exception:
     HAS_CV2 = False
 
 # 시스템별 테서랙트 경로 지정(없으면 기본값 사용)
-pytesseract.pytesseract.tesseract_cmd = os.getenv("TESSERACT_CMD", pytesseract.pytesseract.tesseract_cmd)
-
+pytesseract.pytesseract.tesseract_cmd = os.getenv(
+    "TESSERACT_CMD",
+    pytesseract.pytesseract.tesseract_cmd
+)
 
 # =========================
 # 1) 전처리 & OCR 유틸
@@ -50,7 +51,7 @@ def _ocr_text(img: Image.Image, allow_kor: bool = True) -> str:
     return pytesseract.image_to_string(img, config=cfg, lang=lang)
 
 
-def _resize_image(img: Image.Image, max_w: int = 1600) -> Image.Image:
+def _resize_image(img: Image.Image, max_w: int = 1200) -> Image.Image:
     """너무 큰 이미지는 축소하여 OCR 속도 개선"""
     w, h = img.size
     if w > max_w:
@@ -58,33 +59,10 @@ def _resize_image(img: Image.Image, max_w: int = 1600) -> Image.Image:
         return img.resize((max_w, int(h * scale)))
     return img
 
-
 # =========================
-# 2) 정규식/정규화
+# 2) 정규식/도우미
 # =========================
-INVOICE_RE = re.compile(r"(\d{4})[- ]?(\d{4})[- ]?(\d{4})")
-PHONE_RE   = re.compile(r"((?:01[016789]|05\d{2})[- ]?\d{3,4}[- ]?(?:\d{4}|\*{4}))")
-
-def _normalize_invoice(s: str) -> str:
-    s = s.replace("—", "-").replace("–", "-")
-    m = INVOICE_RE.search(s)
-    if not m:
-        return ""
-    # 050x-xxxx-xxxx 처럼 첫 그룹이 05로 시작하면 송장으로 취급하지 않음
-    if m.group(1).startswith("05"):
-        return ""
-    return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-
-
-def _likely_name(s: str) -> bool:
-    """순수 한글 2~4자 → 이름으로 가정"""
-    return bool(re.fullmatch(r"[가-힣]{2,4}", s))
-
-
-def _is_address(s: str) -> bool:
-    """주소 판별 간단 로직"""
-    return any(tok in s for tok in ["시", "군", "구", "읍", "면", "동", "리", "로", "길"])
-
+PHONE_RE = re.compile(r"(?:01[016789]|05\d{2})[-\s]?\d{3,4}[-\s]?(?:\d{4}|\*{4})")
 
 def _normalize_phone(s: str) -> str:
     m = PHONE_RE.search(s)
@@ -92,6 +70,13 @@ def _normalize_phone(s: str) -> str:
         return ""
     return m.group().replace(" ", "").replace("--", "-")
 
+def _likely_name(s: str) -> bool:
+    """순수 한글 2~4자 → 이름으로 가정"""
+    return bool(re.fullmatch(r"[가-힣]{2,4}", s))
+
+def _is_address(s: str) -> bool:
+    """주소 판별 간단 로직"""
+    return any(tok in s for tok in ["시", "군", "구", "읍", "면", "동", "리", "로", "길", "번길"])
 
 # =========================
 # 3) ROI 추출
@@ -148,7 +133,6 @@ def _crop_invoice_roi(path: str) -> Image.Image:
     roi = _crop_invoice_roi_cv2(path) if HAS_CV2 else None
     return roi if roi is not None else _crop_invoice_roi_ratio(path)
 
-
 # =========================
 # 4) 텍스트 → 필드 파싱
 # =========================
@@ -158,13 +142,13 @@ def _parse_fields(lines: List[str]) -> dict:
     - 전화번호: 010-1234-**** / 010-1234-5678 / 05xx-1234-5678
     - 대여자명: 전화번호 '바로 앞' (레이블 제거)
     - 주소: 전화번호 줄 '바로 아래'에서 시작(필요 시 다음 줄도 이어붙임)
-    - 송장번호: 대여자명/전화 줄 기준 '위쪽'에서 가까운 줄(05 시작이면 제외)
     """
-    invoice, phone, name, addr = "", "", "", ""
+    phone, name, addr = "", "", ""
     phone_idx = -1
 
-    phone_pat = re.compile(r'(?P<prefix>01[016789]|05\d{2})[-\s]?(?P<mid>\d{3,4})[-\s]?(?P<last>\d{4}|\*{4})')
-    inv_pat   = re.compile(r'(\d{4})[-\s]?(\d{4})[-\s]?(\d{4})')
+    phone_pat = re.compile(
+        r'(?P<prefix>01[016789]|05\d{2})[-\s]?(?P<mid>\d{3,4})[-\s]?(?P<last>\d{4}|\*{4})'
+    )
 
     # 1) 전화번호 줄 먼저 찾기 (가장 먼저 나오는 1개만 사용)
     for i, ln in enumerate(lines):
@@ -180,7 +164,6 @@ def _parse_fields(lines: List[str]) -> dict:
         left = re.sub(r"[|\[\](){}.,;:]+", "", left)
         left = re.sub(r"^(받는.?|수령인|수취인|이름)\s*[:：]?\s*", "", left, flags=re.I).strip()
         name = left
-
         break  # 첫 전화만 사용
 
     # 2) 주소: 전화 줄 '바로 아래' + 필요시 다음 줄 일부 이어붙임
@@ -192,21 +175,7 @@ def _parse_fields(lines: List[str]) -> dict:
             if _is_address(cont) or re.search(r"(동|호|아파트|빌라|로|길|번길|\d)", cont):
                 addr = (addr + " " + cont).strip()
 
-    # 3) 송장번호: 전화/이름 줄 기준 위쪽 가까운 줄부터 검색(최대 4줄)
-    if phone_idx >= 0:
-        for j in range(phone_idx - 1, max(-1, phone_idx - 5), -1):
-            m = inv_pat.search(lines[j])
-            if m and not m.group(1).startswith("05"):  # 05로 시작하면 송장 제외(안심번호)
-                invoice = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-                break
-
-    # 4) 폴백(여전히 비었을 때만 전체 스캔)
-    if not invoice:
-        for ln in lines:
-            m = inv_pat.search(ln)
-            if m and not m.group(1).startswith("05"):
-                invoice = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-                break
+    # 3) 전화 폴백(여전히 비었을 때만)
     if not phone:
         for ln in lines:
             m = phone_pat.search(ln)
@@ -215,10 +184,10 @@ def _parse_fields(lines: List[str]) -> dict:
                 break
 
     return {
-        "송장번호": invoice,
         "전화번호": phone,
         "대여자명": name,
         "주소": addr,
+        "송장번호": "",  # 송장 추출 비활성화
     }
 
 # =========================
@@ -232,8 +201,15 @@ def _map_model_device(qr_text: str) -> Tuple[str, str]:
     """
     raw = (qr_text or "").strip()
     u = re.sub(r"[^A-Z0-9]", "", raw.upper())
-    MAP = {"SM": "심포니", "LT": "락티나",
-           "S": "스윙", "M": "스윙맥스", "F": "프리스타일", "G": "각시밀", "C": "시밀레"}
+    MAP = {
+        "SM": "심포니",
+        "LT": "락티나",
+        "S": "스윙",
+        "M": "스윙맥스",
+        "F": "프리스타일",
+        "G": "각시밀",
+        "C": "시밀레",
+    }
 
     m2 = re.match(r"^(SM|LT)(\d{2,})$", u)
     if m2:
@@ -245,14 +221,13 @@ def _map_model_device(qr_text: str) -> Tuple[str, str]:
 
     return "-", ""
 
-
 # =========================
-# 6) 메인 엔트리 (기존 시그니처 유지)
+# 6) 메인 엔트리 (최종 OCR)
 # =========================
 def make_final_entry(qr_text: str, 송장_image_path: str):
-    # ROI 자르기
+    # ROI 자르기 + 리사이즈
     roi = _crop_invoice_roi(송장_image_path)
-    roi = _resize_image(roi, 1600)
+    roi = _resize_image(roi, 1200)
 
     # 디버그 저장 (ROI 이미지)
     try:
@@ -261,10 +236,10 @@ def make_final_entry(qr_text: str, 송장_image_path: str):
     except Exception:
         pass
 
-    # OCR: 약하게 → strong은 결과 짧을 때만
-    txt = _ocr_text(_preprocess(roi, strong=False))
+    # OCR: 약하게 → 결과가 너무 짧으면 강하게 재시도
+    txt = _ocr_text(_preprocess(roi, strong=False), allow_kor=True)
     if len(re.sub(r"\s+", "", txt)) < 20:   # 20자 미만이면 strong OCR
-        txt = _ocr_text(_preprocess(roi, strong=True))
+        txt = _ocr_text(_preprocess(roi, strong=True), allow_kor=True)
 
     # 디버그 저장 (OCR 라인)
     try:
@@ -292,10 +267,10 @@ def make_final_entry(qr_text: str, 송장_image_path: str):
         "주소": parsed.get("주소", ""),
         "기기번호": device_id,
         "기종": model,
-        "송장번호": parsed.get("송장번호", ""),
+        "송장번호": "",  # 일관성 유지
     }
 
-    # 보정: 전화는 있는데 이름이 비었을 경우
+    # 보정: 전화는 있는데 이름이 비었을 경우 (전화 포함된 줄의 전화 '앞' 텍스트 재시도)
     if out["전화번호"] and not out["대여자명"]:
         for ln in lines:
             if out["전화번호"] in ln:
@@ -308,35 +283,33 @@ def make_final_entry(qr_text: str, 송장_image_path: str):
 
     return out
 
+# =========================
+# 7) 초고속 프리뷰 (숫자 위주)
+# =========================
 def make_final_entry_fast(qr_text: str, 송장_image_path: str):
     """
     초고속 프리뷰:
     - ROI 자름 → 가로 1024로 축소
-    - 숫자 전용 OCR(영문만, whitelist)로 '송장번호/전화' 우선 추출
-    - 송장번호는 '05'로 시작하면 제외
+    - 숫자 전용 OCR(영문만, whitelist)로 '전화'만 빠르게 추출
     - 이름/주소는 비워둘 수 있음(필요 최소만 빠르게)
+    - 송장번호는 사용하지 않음(항상 "")
     """
     roi = _crop_invoice_roi(송장_image_path)
     roi = _resize_image(roi, 1024)
 
+    # 숫자 전용 OCR (빠름)
     cfg_fast = "--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789-"
     txt_num = pytesseract.image_to_string(_preprocess(roi, strong=False), config=cfg_fast, lang="eng")
     lines_num = [ln.strip() for ln in txt_num.splitlines() if ln.strip()]
 
     ship_date = date.today().isoformat()
     model, device_id = _map_model_device(qr_text)
-    invoice, phone = "", ""
 
+    phone = ""
     for ln in lines_num:
-        if not phone:
-            m = re.search(r'(01[016789]|05\d{2})[-]?\d{3,4}[-]?(?:\d{4}|\*{4})', ln)
-            if m:
-                phone = re.sub(r'\s+', '', m.group()).replace('--', '-')
-        if not invoice:
-            m = re.search(r'(\d{4})[-]?(\d{4})[-]?(\d{4})', ln)
-            if m and not m.group(1).startswith('05'):
-                invoice = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-        if phone and invoice:
+        m = re.search(r'(01[016789]|05\d{2})[-]?\d{3,4}[-]?(?:\d{4}|\*{4})', ln)
+        if m:
+            phone = re.sub(r'\s+', '', m.group()).replace('--', '-')
             break
 
     return {
@@ -346,6 +319,6 @@ def make_final_entry_fast(qr_text: str, 송장_image_path: str):
         "주소": "",
         "기기번호": device_id,
         "기종": model,
-        "송장번호": invoice,
+        "송장번호": "",
     }
 
