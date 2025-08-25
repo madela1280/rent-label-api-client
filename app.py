@@ -15,7 +15,7 @@ import httpx
 import requests
 import msal
 
-from ocr_utils import make_final_entry, make_final_entry_fast
+from ocr_utils import make_final_entry, make_preview_entry
 from excel_utils import append_row_to_excel
 APP_VERSION = os.getenv("APP_VERSION", "2025-08-25-02")
 
@@ -345,6 +345,21 @@ async def process_ocr(
         if not ok:
             return {"status": "ocr_ok_but_write_failed", "data": result, "write_error": info}
         return {"status": "success", "data": result, "write_info": info}
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+@app.post("/preview-ocr")
+async def preview_ocr(
+    qr_text: str = Form(""),
+    image: UploadFile = File(...)
+):
+    temp_path = f"temp_{image.filename}"
+    with open(temp_path, "wb") as f:
+        shutil.copyfileobj(image.file, f)
+    try:
+        result = make_final_entry_fast(qr_text, temp_path)
+        return {"status": "preview", "data": result}
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)

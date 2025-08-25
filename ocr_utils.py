@@ -13,6 +13,8 @@ from typing import List, Tuple
 
 from PIL import Image, ImageOps, ImageFilter
 import pytesseract
+from pytesseract import image_to_data, Output
+from io import BytesIO
 
 # (선택) OpenCV가 있으면 ROI 탐지에 활용, 없으면 비율 기반으로 동작
 try:
@@ -314,21 +316,17 @@ def make_final_entry_fast(qr_text: str, 송장_image_path: str):
     - 송장번호는 '05'로 시작하면 제외
     - 이름/주소는 비워둘 수 있음(필요 최소만 빠르게)
     """
-    # ROI + 축소
     roi = _crop_invoice_roi(송장_image_path)
     roi = _resize_image(roi, 1024)
 
-    # 숫자 전용 OCR (빠름)
     cfg_fast = "--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789-"
     txt_num = pytesseract.image_to_string(_preprocess(roi, strong=False), config=cfg_fast, lang="eng")
     lines_num = [ln.strip() for ln in txt_num.splitlines() if ln.strip()]
 
-    # 기본 값
     ship_date = date.today().isoformat()
     model, device_id = _map_model_device(qr_text)
     invoice, phone = "", ""
 
-    # 숫자만으로 송장/전화 추출
     for ln in lines_num:
         if not phone:
             m = re.search(r'(01[016789]|05\d{2})[-]?\d{3,4}[-]?(?:\d{4}|\*{4})', ln)
@@ -336,7 +334,7 @@ def make_final_entry_fast(qr_text: str, 송장_image_path: str):
                 phone = re.sub(r'\s+', '', m.group()).replace('--', '-')
         if not invoice:
             m = re.search(r'(\d{4})[-]?(\d{4})[-]?(\d{4})', ln)
-            if m and not m.group(1).startswith('05'):  # 05로 시작하면 송장 제외
+            if m and not m.group(1).startswith('05'):
                 invoice = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
         if phone and invoice:
             break
@@ -350,5 +348,4 @@ def make_final_entry_fast(qr_text: str, 송장_image_path: str):
         "기종": model,
         "송장번호": invoice,
     }
-
 

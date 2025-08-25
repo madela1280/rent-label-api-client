@@ -204,7 +204,7 @@ document.getElementById('captureBtn').addEventListener('click', () => {
     fd.append('qr_text', qr || '');
     fd.append('dry', 1);
     try {
-      const res = await fetch(`${API_BASE}/process-ocr/`, { method:'POST', body:fd });
+      const res = await fetch(`${API_BASE}/preview-ocr`, { method:'POST', body:fd });
       const api = await res.json();
       const d = api.data || {};
       const merged = {
