@@ -176,6 +176,33 @@ document.getElementById('captureBtn').addEventListener('click', () => {
   }
 
   populatePanel(base);
+
+// 촬영 직후 OCR 프리뷰 요청
+canvas.toBlob(async (blob) => {
+  const fd = new FormData();
+  const { text:qr } = scanQRFromCanvas();
+  fd.append('image', blob, 'capture.jpg');
+  fd.append('qr_text', qr || '');
+  fd.append('dry', 1);  // 저장은 안 하고 결과만
+
+  try {
+    const res = await fetch(`${API_BASE}/process-ocr/`, { method:'POST', body:fd });
+    const api = await res.json();
+    const d = api.data || {};
+    const merged = {
+      shipDate: d['출고일']   || base.shipDate,
+      name:     d['대여자명'] || base.name,
+      phone:    d['전화번호'] || base.phone,
+      addr:     d['주소']     || base.addr,
+      deviceId: d['기기번호'] || base.deviceId,
+      model:    d['기종']     || base.model,
+      invoice:  d['송장번호'] || base.invoice
+    };
+    populatePanel(merged);
+  } catch(e) {
+    console.log('OCR 프리뷰 실패', e);
+  }
+}, 'image/jpeg');
 });
 
 /* ===== 확인(엑셀 저장) → 서버 OCR 호출 ===== */
