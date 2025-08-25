@@ -261,51 +261,34 @@ document.getElementById('captureBtn').addEventListener('click', () => {
   });
 });
 
-/* ===== 확인(정식 OCR + 엑셀 저장) ===== */
+/* ===== 확인(엑셀 저장만) ===== */
 document.getElementById('confirmBtn').addEventListener('click', async () => {
-  if (!canvas.width) return alert('캡처된 이미지가 없습니다.');
+  if (!ocrPreview) return alert('인식 결과가 없습니다. 먼저 촬영하세요.');
   const btn = document.getElementById('confirmBtn');
   btn.disabled = true;
 
-  const label = badgeText || `${r_model.textContent} / ${r_deviceId.textContent}`;
-  if (label.trim() !== '/') drawBadge(label, badgePos.x, badgePos.y);
+  try {
+    const res = await fetch(`${API_BASE}/save-result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ocrPreview)
+    });
+    const api = await res.json();
 
-  canvasToBlobResized(async (blob) => {
-    try {
-      const fd = new FormData();
-      const { text:qr } = scanQRFromCanvas();
-      fd.append('image', blob, 'confirm.jpg');
-      fd.append('qr_text', qr || '');
-      fd.append('dry', 0);
-      fd.append('no_write', 0);
-
-      const res = await fetch(`${API_BASE}/process-ocr/`, { method:'POST', body: fd });
-      const api = await res.json();
-
-      if (res.ok && api.status === 'success') {
-        const d = api.data || {};
-        populatePanel({
-          shipDate: d['출고일']   || r_shipDate.textContent,
-          name:     d['대여자명'] || r_name.textContent,
-          phone:    d['전화번호'] || r_phone.textContent,
-          addr:     d['주소']     || r_addr.textContent,
-          deviceId: d['기기번호'] || r_deviceId.textContent,
-          model:    d['기종']     || r_model.textContent,
-          invoice:  d['송장번호'] || r_invoice.textContent
-        });
-        alert('정식 OCR 및 엑셀 저장 완료');
-      } else if (api.write_error && api.write_error.error === 'no_access_token') {
-        alert('엑셀 저장을 위해 먼저 로그인하세요.');
-        window.location.href = `${API_BASE}/login`;
-      } else {
-        alert('저장 실패: ' + JSON.stringify(api));
-      }
-    } catch (e) {
-      alert('서버 전송 실패: ' + e.message);
-    } finally {
-      btn.disabled = false;
+    if (res.ok && api.status === 'success') {
+      populatePanel(ocrPreview);
+      alert('엑셀 저장 완료');
+    } else if (api.write_error && api.write_error.error === 'no_access_token') {
+      alert('엑셀 저장을 위해 먼저 로그인하세요.');
+      window.location.href = `${API_BASE}/login`;
+    } else {
+      alert('저장 실패: ' + JSON.stringify(api));
     }
-  });
+  } catch (e) {
+    alert('서버 전송 실패: ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
 });
 </script>
 </body>
