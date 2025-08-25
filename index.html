@@ -8,8 +8,10 @@
   <meta name="theme-color" content="#111827" />
   <style>
     :root { color-scheme: light dark; }
-    body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Apple SD Gothic Neo,Noto Sans KR;
-           margin:0; padding:16px; background:#fff; color:#111827; }
+    body {
+      font-family: system-ui,-apple-system,Segoe UI,Roboto,Apple SD Gothic Neo,Noto Sans KR;
+      margin:0; padding:16px; background:#fff; color:#111827;
+    }
     header { font-weight:800; font-size:22px; margin:4px 0 12px; }
     .card { border:1px solid #e5e7eb; border-radius:12px; padding:16px; }
     button { padding:12px 16px; border-radius:12px; border:0; background:#111827; color:#fff; font-weight:700; }
@@ -38,14 +40,16 @@
         기종: <span id="r_model">-</span> / 기기번호: <span id="r_deviceId">-</span><br/>
         송장번호: <span id="r_invoice">-</span>
       </div>
-      <button id="confirmBtn" style="margin-top:12px;">확인 (엑셀 저장)</button>
+      <button id="confirmBtn" style="margin-top:12px;">확인 (정식 OCR + 엑셀 저장)</button>
     </div>
   </div>
 
 <script>
-const APP_VER = "2025-08-25-02";  // 배포할 때마다 증가
+/* ===== 상수 ===== */
+const APP_VER  = "2025-08-25-02";               // 배포마다 증가
 const API_BASE = "https://rent-label-api-client-docker.onrender.com";
 
+/* ===== 서비스워커 등록(강제 최신화) ===== */
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js?ver=' + APP_VER).then(async (reg) => {
     try {
@@ -53,17 +57,11 @@ if ('serviceWorker' in navigator) {
       if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
       if (reg.installing) {
         reg.installing.addEventListener('statechange', (e) => {
-          if (e.target.state === 'installed') {
-            reg.waiting?.postMessage({ type: 'SKIP_WAITING' });
-          }
+          if (e.target.state === 'installed') reg.waiting?.postMessage({ type: 'SKIP_WAITING' });
         });
       }
-      navigator.serviceWorker.addEventListener('controllerchange', () => {
-        location.reload(); // 새 SW가 컨트롤 시작하면 즉시 리로드
-      });
-    } catch (e) {
-      console.log('SW update error', e);
-    }
+      navigator.serviceWorker.addEventListener('controllerchange', () => { location.reload(); });
+    } catch (e) { console.log('SW update error', e); }
   }).catch(()=>{});
 }
 
@@ -82,22 +80,6 @@ const r_invoice  = document.getElementById('r_invoice');
 
 let badgeText = '';
 let badgePos  = { x: 24, y: 24 };
-let lastQrLoc = null;
-
-/* ===== 업로드 리사이즈 유틸 ===== */
-function canvasToBlobResized(cb) {
-  const maxW = 1600;   // 업로드 최대 가로
-  const scale = Math.min(1, maxW / canvas.width);
-  if (scale < 1) {
-    const tmp = document.createElement('canvas');
-    tmp.width = Math.round(canvas.width * scale);
-    tmp.height = Math.round(canvas.height * scale);
-    tmp.getContext('2d', { willReadFrequently: true }).drawImage(canvas, 0, 0, tmp.width, tmp.height);
-    tmp.toBlob(cb, 'image/jpeg', 0.5);
-  } else {
-    canvas.toBlob(cb, 'image/jpeg', 0.5);
-  }
-}
 
 /* ===== 프리뷰 결과 보관 ===== */
 let ocrPreview = null;
@@ -119,6 +101,7 @@ let ocrRunning = false;
 
 /* ===== 유틸 ===== */
 function clamp(v, min, max){ return Math.max(min, Math.min(max, v)); }
+
 function parseModelDevice(raw) {
   const original = (raw || '').toString().trim();
   const u = original.toUpperCase().replace(/[^A-Z0-9]/g,'');
@@ -129,6 +112,7 @@ function parseModelDevice(raw) {
   if (m1)  return { model: MAP[m1[1]] || '-', deviceId: original, raw: original };
   return { model: '-', deviceId: '-', raw: original };
 }
+
 function drawBadge(text, x = 24, y = 24) {
   if (!text) return;
   const pad = 12;
@@ -142,6 +126,7 @@ function drawBadge(text, x = 24, y = 24) {
   ctx.fillStyle = '#fff';
   ctx.fillText(text, x + pad * 0.6, y + 28);
 }
+
 function populatePanel(d) {
   document.getElementById('ocrPanel').style.display = 'block';
   r_shipDate.textContent = d.shipDate || '-';
@@ -152,12 +137,28 @@ function populatePanel(d) {
   r_deviceId.textContent = d.deviceId || '-';
   r_invoice.textContent  = d.invoice  || '-';
 }
+
 function scanQRFromCanvas() {
   try {
     const img = ctx.getImageData(0,0,canvas.width,canvas.height);
     const code = jsQR(img.data, img.width, img.height, { inversionAttempts:'attemptBoth' });
     return code ? { text: code.data, loc: code.location } : { text:'', loc:null };
   } catch { return { text:'', loc:null }; }
+}
+
+/* 업로드 리사이즈(경량화) */
+function canvasToBlobResized(cb) {
+  const maxW = 900; // 1024 -> 900
+  const scale = Math.min(1, maxW / canvas.width);
+  if (scale < 1) {
+    const tmp = document.createElement('canvas');
+    tmp.width = Math.round(canvas.width * scale);
+    tmp.height = Math.round(canvas.height * scale);
+    tmp.getContext('2d', { willReadFrequently: true }).drawImage(canvas, 0, 0, tmp.width, tmp.height);
+    tmp.toBlob(cb, 'image/jpeg', 0.32);   // 0.4 -> 0.32
+  } else {
+    canvas.toBlob(cb, 'image/jpeg', 0.32); // 0.4 -> 0.32
+  }
 }
 
 /* ===== 촬영 버튼 ===== */
@@ -181,7 +182,10 @@ document.getElementById('captureBtn').addEventListener('click', () => {
     base.model = md.model; base.deviceId = md.deviceId;
     if (loc && loc.topLeftCorner) {
       const tl = loc.topLeftCorner;
-      badgePos = { x: tl.x, y: tl.y - 48 };
+      // 뱃지 위치를 QR 좌상단 근처로
+      const y = Math.max(24, tl.y - 48);
+      const x = Math.max(24, tl.x);
+      badgePos = { x, y };
     } else {
       badgePos = { x: 24, y: 24 };
     }
@@ -194,7 +198,7 @@ document.getElementById('captureBtn').addEventListener('click', () => {
 
   populatePanel(base);
 
-  // ===== 촬영 직후 OCR 프리뷰 (dry=1) =====
+  // ===== 촬영 직후 OCR 프리뷰 (dry=1, 숫자 위주) =====
   if (ocrRunning) return;
   ocrRunning = true;
   canvasToBlobResized(async (blob) => {
@@ -227,7 +231,7 @@ document.getElementById('captureBtn').addEventListener('click', () => {
   });
 });
 
-/* ===== 확인(엑셀 저장) – 재OCR 없이 저장만 ===== */
+/* ===== 확인(정식 OCR + 엑셀 저장) ===== */
 document.getElementById('confirmBtn').addEventListener('click', async () => {
   if (!canvas.width) return alert('캡처된 이미지가 없습니다.');
   const btn = document.getElementById('confirmBtn');
@@ -236,33 +240,38 @@ document.getElementById('confirmBtn').addEventListener('click', async () => {
   const label = badgeText || `${r_model.textContent} / ${r_deviceId.textContent}`;
   if (label.trim() !== '/') drawBadge(label, badgePos.x, badgePos.y);
 
-  const payload = ocrPreview || {
-    shipDate: r_shipDate.textContent,
-    name:     r_name.textContent,
-    phone:    r_phone.textContent,
-    addr:     r_addr.textContent,
-    deviceId: r_deviceId.textContent,
-    model:    r_model.textContent,
-    invoice:  r_invoice.textContent
-  };
+  canvasToBlobResized(async (blob) => {
+    try {
+      const fd = new FormData();
+      const { text:qr } = scanQRFromCanvas(); // QR 재스캔(빠름)
+      fd.append('image', blob, 'confirm.jpg');
+      fd.append('qr_text', qr || '');
+      fd.append('dry', 0); // 정식 모드
 
-  try {
-    const res = await fetch(`${API_BASE}/excel/upload`, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify(payload)
-    });
-    const api = await res.json();
-    if (res.ok && api.status === 'ok') {
-      alert('엑셀 저장 성공');
-    } else {
-      alert('엑셀 저장 실패: ' + JSON.stringify(api));
+      const res = await fetch(`${API_BASE}/process-ocr/`, { method:'POST', body: fd });
+      const api = await res.json();
+
+      if (res.ok && (api.status === 'success' || api.status === 'preview')) {
+        const d = api.data || {};
+        populatePanel({
+          shipDate: d['출고일']   || r_shipDate.textContent,
+          name:     d['대여자명'] || r_name.textContent,
+          phone:    d['전화번호'] || r_phone.textContent,
+          addr:     d['주소']     || r_addr.textContent,
+          deviceId: d['기기번호'] || r_deviceId.textContent,
+          model:    d['기종']     || r_model.textContent,
+          invoice:  d['송장번호'] || r_invoice.textContent
+        });
+        alert('정식 OCR 및 엑셀 저장 완료');
+      } else {
+        alert('저장 실패: ' + JSON.stringify(api));
+      }
+    } catch (e) {
+      alert('서버 전송 실패: ' + e.message);
+    } finally {
+      btn.disabled = false;
     }
-  } catch (e) {
-    alert('서버 전송 실패: ' + e.message);
-  } finally {
-    btn.disabled = false;
-  }
+  });
 });
 </script>
 </body>
