@@ -288,35 +288,30 @@ def make_final_entry(qr_text: str, 송장_image_path: str):
 # =========================
 def make_final_entry_fast(qr_text: str, 송장_image_path: str):
     """
-    초고속 프리뷰:
-    - ROI 자름 → 가로 1024로 축소
-    - 숫자 전용 OCR(영문만, whitelist)로 '전화'만 빠르게 추출
-    - 이름/주소는 비워둘 수 있음(필요 최소만 빠르게)
-    - 송장번호는 사용하지 않음(항상 "")
+    초고속 프리뷰(개선):
+    - ROI 자름 → 가로 1000 내로 축소
+    - 한/영 OCR 1회(약하게)로 '전화/이름/주소' 동시에 추출
+    - 규칙은 정식 OCR과 동일(_parse_fields 재사용)
     """
     roi = _crop_invoice_roi(송장_image_path)
-    roi = _resize_image(roi, 1024)
+    roi = _resize_image(roi, 1000)
 
-    # 숫자 전용 OCR (빠름)
-    cfg_fast = "--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789-"
-    txt_num = pytesseract.image_to_string(_preprocess(roi, strong=False), config=cfg_fast, lang="eng")
-    lines_num = [ln.strip() for ln in txt_num.splitlines() if ln.strip()]
+    # 한/영 OCR(약하게) 1회
+    txt = _ocr_text(_preprocess(roi, strong=False), allow_kor=True)
+    if len(re.sub(r"\s+", "", txt)) < 15:  # 너무 짧으면 한 번만 강하게
+        txt = _ocr_text(_preprocess(roi, strong=True), allow_kor=True)
 
-    ship_date = date.today().isoformat()
+    lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
+    parsed = _parse_fields(lines)
+
     model, device_id = _map_model_device(qr_text)
-
-    phone = ""
-    for ln in lines_num:
-        m = re.search(r'(01[016789]|05\d{2})[-]?\d{3,4}[-]?(?:\d{4}|\*{4})', ln)
-        if m:
-            phone = re.sub(r'\s+', '', m.group()).replace('--', '-')
-            break
+    ship_date = date.today().isoformat()
 
     return {
         "출고일": ship_date,
-        "대여자명": "",
-        "전화번호": phone,
-        "주소": "",
+        "대여자명": parsed.get("대여자명", ""),
+        "전화번호": parsed.get("전화번호", ""),
+        "주소": parsed.get("주소", ""),
         "기기번호": device_id,
         "기종": model,
         "송장번호": "",
