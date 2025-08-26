@@ -169,7 +169,6 @@ async def callback(request: Request):
     except Exception as e:
         return JSONResponse({"error": "callback_failed", "details": str(e)}, status_code=500)
 
-
         # 토큰 파일 저장 (세션 없어도 이후 저장 가능)
         try:
             with open("access_token.txt", "w", encoding="utf-8") as f:
