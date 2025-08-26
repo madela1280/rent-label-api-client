@@ -17,7 +17,7 @@ from typing import Optional, Dict, Any
 
 from ocr_utils import make_final_entry, make_final_entry_fast
 
-APP_VERSION = os.getenv("APP_VERSION", "2025-08-26-01")
+APP_VERSION = os.getenv("APP_VERSION", "2025-08-26-02")
 
 # -------------------------------
 # FastAPI & Session
@@ -49,7 +49,6 @@ TENANT_ID = os.getenv("TENANT_ID", "405ba8a3-73ff-4423-8925-d9eda360cfa7")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 REDIRECT_URI = os.getenv("REDIRECT_URI", "https://rent-label-api-client-docker.onrender.com/callback")
 
-# ★ offline_access + openid/profile 추가 (리프레시/사일런트)
 SCOPES = [
     "User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All",
     "offline_access", "openid", "profile"
@@ -58,7 +57,7 @@ AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 GRAPH = "https://graph.microsoft.com/v1.0"
 
 # -------------------------------
-# MSAL App + Token Cache (영구)
+# MSAL App + Token Cache (persistent)
 # -------------------------------
 CACHE_PATH = os.getenv("MSAL_CACHE_PATH", "msal_cache.bin")
 
@@ -73,13 +72,16 @@ def _load_cache():
     return cache
 
 def _save_cache(cache: msal.SerializableTokenCache):
-    if cache.has_state_changed:
-        with open(CACHE_PATH, "w", encoding="utf-8") as f:
-            f.write(cache.serialize())
+    try:
+        if cache.has_state_changed:
+            with open(CACHE_PATH, "w", encoding="utf-8") as f:
+                f.write(cache.serialize())
+    except Exception:
+        pass
 
 def _msal_app():
     if not CLIENT_SECRET:
-        raise RuntimeError("CLIENT_SECRET env is missing.")
+        raise RuntimeError("CLIENT_SECRET env is missing")
     cache = _load_cache()
     app_ = msal.ConfidentialClientApplication(
         CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET, token_cache=cache
@@ -87,86 +89,119 @@ def _msal_app():
     return app_, cache
 
 def _acquire_token_silent() -> Optional[str]:
-    app_, cache = _msal_app()
-    accounts = app_.get_accounts()
-    if accounts:
-        result = app_.acquire_token_silent(SCOPES, account=accounts[0])
-        if result and "access_token" in result:
-            _save_cache(cache)
-            return result["access_token"]
+    try:
+        app_, cache = _msal_app()
+        accounts = app_.get_accounts()
+        if accounts:
+            result = app_.acquire_token_silent(SCOPES, account=accounts[0])
+            if result and "access_token" in result:
+                _save_cache(cache)
+                return result["access_token"]
+    except Exception:
+        pass
     return None
 
-def _get_access_token(request: Optional[Request] = None):
-    # 1) MSAL 캐시에서 사일런트
+def _get_access_token(_: Optional[Request] = None) -> Optional[str]:
     tok = _acquire_token_silent()
     if tok:
         return tok
-    # 2) 레거시 파일(최후 수단)
+    # fallback for legacy file
     try:
         with open("access_token.txt", "r", encoding="utf-8") as f:
             t = (f.read() or "").strip()
             return t or None
-    except:
+    except Exception:
         return None
 
 # -------------------------------
-# 로그인 & 콜백
+# Login & Callback
 # -------------------------------
 @app.get("/login")
-def login(request: Request):
-    # 더 이상 prompt="login" 강제하지 않음 (반복 로그인 방지)
-    request.session["state"] = str(uuid.uuid4())
-    app_, cache = _msal_app()
-    auth_url = app_.get_authorization_request_url(
-        scopes=SCOPES,
-        state=request.session["state"],
-        redirect_uri=REDIRECT_URI,
-        response_mode="query",
-    )
-    return RedirectResponse(auth_url)
+def login(_: Request):
+    try:
+        # 쿠키/세션 없이도 진행 (state 미사용)
+        app_, _ = _msal_app()
+        auth_url = app_.get_authorization_request_url(
+            scopes=SCOPES,
+            redirect_uri=REDIRECT_URI,
+            response_mode="query",
+            prompt="select_account",  # 강제 재로그인 아님
+        )
+        return RedirectResponse(auth_url)
+    except Exception as e:
+        return JSONResponse({"error": "login_init_failed", "details": str(e)}, status_code=500)
+
 
 @app.get("/callback")
 async def callback(request: Request):
-    if request.query_params.get("state") != request.session.get("state"):
-        return JSONResponse({"error": "state mismatch"}, status_code=400)
-    code = request.query_params.get("code")
-    if not code:
-        return JSONResponse({"error": "Authorization code missing"}, status_code=400)
-
-    app_, cache = _msal_app()
-    result = app_.acquire_token_by_authorization_code(code, scopes=SCOPES, redirect_uri=REDIRECT_URI)
-    if "access_token" not in result:
-        return JSONResponse({"error": "Token acquire failed", "details": result}, status_code=400)
-
-    # 토큰 캐시 영구 저장
-    _save_cache(cache)
-
-    # 레거시 파일도 유지(호환)
     try:
-        with open("refresh_token.txt", "w", encoding="utf-8") as f:
-            f.write(result.get("refresh_token", "") or "")
-    except: pass
-    try:
-        with open("access_token.txt", "w", encoding="utf-8") as f:
-            f.write(result.get("access_token", "") or "")
-    except: pass
+        code = request.query_params.get("code")
+        if not code:
+            return JSONResponse({"error": "authorization_code_missing"}, status_code=400)
 
-    claims = result.get("id_token_claims", {}) or {}
-    request.session.clear()
-    request.session["user"] = {
-        "name": claims.get("name"),
-        "upn": claims.get("preferred_username"),
-        "oid": claims.get("oid"),
-    }
-    return RedirectResponse("/me")
+        app_, cache = _msal_app()
+        result = app_.acquire_token_by_authorization_code(
+            code, scopes=SCOPES, redirect_uri=REDIRECT_URI
+        )
+        if "access_token" not in result:
+            return JSONResponse({"error": "token_acquire_failed", "details": result}, status_code=400)
+
+        # 토큰 파일 저장 (세션 없어도 이후 저장 가능)
+        try:
+            with open("access_token.txt", "w", encoding="utf-8") as f:
+                f.write(result.get("access_token", "") or "")
+            with open("refresh_token.txt", "w", encoding="utf-8") as f:
+                f.write(result.get("refresh_token", "") or "")
+        except:
+            pass
+
+        _save_cache(cache)  # 있으면 저장
+
+        # 세션은 선택 (없어도 저장엔 영향 없음)
+        claims = result.get("id_token_claims", {}) or {}
+        request.session.clear()
+        request.session["user"] = {
+            "name": claims.get("name"),
+            "upn": claims.get("preferred_username"),
+            "oid": claims.get("oid"),
+        }
+        return RedirectResponse("/me")
+    except Exception as e:
+        return JSONResponse({"error": "callback_failed", "details": str(e)}, status_code=500)
+
+             app_, cache = _msal_app()
+        result = app_.acquire_token_by_authorization_code(code, scopes=SCOPES, redirect_uri=REDIRECT_URI)
+        if "access_token" not in result:
+            return JSONResponse({"error": "token_acquire_failed", "details": result}, status_code=400)
+
+        _save_cache(cache)  # persist tokens
+
+        # keep legacy files too
+        try:
+            with open("refresh_token.txt", "w", encoding="utf-8") as f:
+                f.write(result.get("refresh_token", "") or "")
+        except Exception: pass
+        try:
+            with open("access_token.txt", "w", encoding="utf-8") as f:
+                f.write(result.get("access_token", "") or "")
+        except Exception: pass
+
+        claims = result.get("id_token_claims", {}) or {}
+        request.session.clear()
+        request.session["user"] = {
+            "name": claims.get("name"),
+            "upn": claims.get("preferred_username"),
+            "oid": claims.get("oid"),
+        }
+        return RedirectResponse("/me")
+    except Exception as e:
+        return JSONResponse({"error": "callback_failed", "details": str(e)}, status_code=500)
 
 @app.get("/me")
 def me(request: Request):
-    # 사일런트 시도
     if _acquire_token_silent():
         user = request.session.get("user") or {}
         return JSONResponse({"status": "ok", "user": user})
-    # 없으면 로그인 안내
     return RedirectResponse("/login")
 
 # -------------------------------
@@ -191,9 +226,8 @@ def sw():
     return FileResponse(os.path.join(BASE_DIR, "sw.js"))
 
 # -------------------------------
-# Graph Helper & Excel
+# Graph + Excel helpers
 # -------------------------------
-GRAPH = "https://graph.microsoft.com/v1.0"
 FILE_NAME = os.getenv("FILE_NAME", "유축기출고.xlsx")
 SHEET_NAME = os.getenv("WORKSHEET_NAME", "유축기출고")
 
@@ -201,9 +235,7 @@ _DRIVE_ITEM_ID_CACHE = {"name": None, "id": None}
 def _get_drive_item_id(headers, file_name):
     if _DRIVE_ITEM_ID_CACHE["name"] == file_name and _DRIVE_ITEM_ID_CACHE["id"]:
         return _DRIVE_ITEM_ID_CACHE["id"]
-    search = requests.get(
-        f"{GRAPH}/me/drive/root/search(q='{file_name}')?$top=1", headers=headers
-    ).json()
+    search = requests.get(f"{GRAPH}/me/drive/root/search(q='{file_name}')?$top=1", headers=headers).json()
     items = search.get("value", [])
     if not items or items[0]["name"] != file_name:
         return None
@@ -212,39 +244,27 @@ def _get_drive_item_id(headers, file_name):
     return _DRIVE_ITEM_ID_CACHE["id"]
 
 def write_row_to_onedrive(row):
-    """
-    워크북 세션(persistChanges=True) + 쓰기 후 즉시 읽어 검증.
-    """
     token = _get_access_token()
     if not token:
         return False, {"error":"no_access_token"}
-
     base_headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
     item_id = _get_drive_item_id(base_headers, FILE_NAME)
     if not item_id:
         return False, {"error":"file_not_found","file":FILE_NAME}
 
-    meta = requests.get(
-        f"{GRAPH}/me/drive/items/{item_id}?$select=webUrl,name,parentReference", headers=base_headers
-    ).json()
+    meta = requests.get(f"{GRAPH}/me/drive/items/{item_id}?$select=webUrl,name,parentReference", headers=base_headers).json()
     web_url = meta.get("webUrl")
 
-    # 세션 생성
-    sess = requests.post(
-        f"{GRAPH}/me/drive/items/{item_id}/workbook/createSession",
-        headers=base_headers, json={"persistChanges": True}
-    )
+    # workbook session
+    sess = requests.post(f"{GRAPH}/me/drive/items/{item_id}/workbook/createSession", headers=base_headers, json={"persistChanges": True})
     if sess.status_code not in (200, 201):
         return False, {"error":"session_create_failed","status":sess.status_code,"text":sess.text}
     sid = sess.json().get("id")
     headers = {**base_headers, "workbook-session-id": sid}
 
     try:
-        used = requests.get(
-            f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/usedRange",
-            headers=headers
-        ).json()
+        used = requests.get(f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/usedRange", headers=headers).json()
         address = used.get("address") or f"{SHEET_NAME}!A1:A1"
         try:
             last_row = int(address.split("!")[1].split(":")[1][1:])
@@ -276,14 +296,14 @@ def write_row_to_onedrive(row):
         pass
 
 # -------------------------------
-# OCR + Excel
+# OCR APIs
 # -------------------------------
 @app.post("/process-ocr/")
 async def process_ocr(
     qr_text: str = Form(""),
     image: UploadFile = File(...),
-    dry: int = Form(0),          # 1=초고속 프리뷰, 0=정식 OCR
-    no_write: int = Form(0)      # 1=정식 OCR 하되 "쓰기 없이"
+    dry: int = Form(0),
+    no_write: int = Form(0)
 ):
     temp_path = f"temp_{image.filename}"
     with open(temp_path, "wb") as f:
@@ -324,7 +344,7 @@ async def preview_ocr(qr_text: str = Form(""), image: UploadFile = File(...)):
         if os.path.exists(temp_path): os.remove(temp_path)
 
 # -------------------------------
-# Save result (프론트 인식결과 그대로 저장)
+# Save result (front payload)
 # -------------------------------
 @app.post("/save-result")
 def save_result(data: Dict[str, Any] = Body(...)):
