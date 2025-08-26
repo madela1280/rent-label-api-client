@@ -8,31 +8,25 @@
   <meta name="theme-color" content="#111827" />
   <style>
     :root { color-scheme: light dark; }
-    body {
-      font-family: system-ui,-apple-system,Segoe UI,Roboto,Apple SD Gothic Neo,Noto Sans KR;
-      margin:0; padding:16px; background:#fff; color:#111827;
-    }
-    header { font-weight:800; font-size:22px; margin:4px 0 12px; }
-    .card { border:1px solid #e5e7eb; border-radius:12px; padding:16px; }
-    button { padding:12px 16px; border-radius:12px; border:0; background:#111827; color:#fff; font-weight:700; }
-    video, canvas { width:100%; border:1px solid #e5e7eb; border-radius:10px; background:#000; }
-    #preview, #snapshot { width:100%; aspect-ratio:16/7; object-fit:cover; }
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Apple SD Gothic Neo,Noto Sans KR;margin:0;padding:16px;background:#fff;color:#111827}
+    header{font-weight:800;font-size:22px;margin:4px 0 12px}
+    .card{border:1px solid #e5e7eb;border-radius:12px;padding:16px}
+    button{padding:12px 16px;border-radius:12px;border:0;background:#111827;color:#fff;font-weight:700}
+    video,canvas{width:100%;border:1px solid #e5e7eb;border-radius:10px;background:#000}
+    #preview,#snapshot{width:100%;aspect-ratio:16/7;object-fit:cover}
+    .subbtn{background:#334155;margin:8px 0 16px}
   </style>
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 </head>
 <body>
-  <header>유축기 출고 스캔 (PWA)</header>
+  <header>카메라 테스트</header>
 
   <div class="card">
-    <p style="font-weight:700;font-size:20px;margin:0 0 10px;">카메라 테스트</p>
     <video id="preview" autoplay playsinline muted></video>
     <br/><br/>
     <button id="captureBtn">사진 촬영</button>
 
-    <!-- 화면 표시용 캔버스(배지 오버레이 OK) -->
     <canvas id="snapshot" style="display:none;margin-top:12px;"></canvas>
-    <!-- OCR 전용 깨끗한 캔버스(절대 배지 X) -->
-    <canvas id="ocrSrc" style="display:none;"></canvas>
 
     <div id="ocrPanel" style="display:none;margin-top:16px;">
       <div style="font-weight:800;margin-bottom:8px;">인식 결과 (확인 후 저장)</div>
@@ -48,31 +42,38 @@
   </div>
 
 <script>
-const APP_VER  = "2025-08-26-08";
+/* ===== 상수 ===== */
+const APP_VER  = "2025-08-26-10";                 // 캐시 버전
 const API_BASE = "https://rent-label-api-client-docker.onrender.com";
 
-/* SW 강제 최신화 */
+/* ===== 서비스워커 강제 최신화 ===== */
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js?ver=' + APP_VER).then(async (reg) => {
     try {
       await reg.update();
       if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
-      if (reg.installing) {
-        reg.installing.addEventListener('statechange', (e) => {
-          if (e.target.state === 'installed') reg.waiting?.postMessage({ type: 'SKIP_WAITING' });
-        });
-      }
+      if (reg.installing) reg.installing.addEventListener('statechange', (e) => {
+        if (e.target.state === 'installed') reg.waiting?.postMessage({ type: 'SKIP_WAITING' });
+      });
       navigator.serviceWorker.addEventListener('controllerchange', () => { location.reload(); });
-    } catch(e){ console.log(e); }
-  });
+    } catch (e) {}
+  }).catch(()=>{});
 }
 
-/* 요소 */
+/* ===== 공통 유틸 ===== */
+async function fetchWithTimeout(url, options={}, timeoutMs=8000){
+  const ctrl = new AbortController();
+  const t = setTimeout(()=>ctrl.abort(), timeoutMs);
+  try { return await fetch(url, {signal:ctrl.signal, ...options}); }
+  finally { clearTimeout(t); }
+}
+function warmBackend(){ fetchWithTimeout(`${API_BASE}/__ping`, {}, 3000).catch(()=>{}); }
+warmBackend();
+
+/* ===== 요소 ===== */
 const video   = document.getElementById('preview');
-const viewCvs = document.getElementById('snapshot');   // 화면용(배지 OK)
-const viewCtx = viewCvs.getContext('2d', { willReadFrequently: true });
-const ocrCvs  = document.getElementById('ocrSrc');     // OCR용(배지 X)
-const ocrCtx  = ocrCvs.getContext('2d', { willReadFrequently: true });
+const canvas  = document.getElementById('snapshot');
+const ctx     = canvas.getContext('2d', { willReadFrequently: true });
 
 const r_shipDate = document.getElementById('r_shipDate');
 const r_name     = document.getElementById('r_name');
@@ -83,11 +84,11 @@ const r_deviceId = document.getElementById('r_deviceId');
 const r_invoice  = document.getElementById('r_invoice');
 
 let badgeText = '';
-let badgePos  = { x: 20, y: 36 }; // 기본을 살짝 더 좌측/윗쪽
+let badgePos  = { x: 16, y: 12 };     // ← 요청: 조금 더 좌측/윗쪽
 let ocrPreview = null;
 let ocrRunning = false;
 
-/* 카메라 */
+/* ===== 카메라 ===== */
 (async () => {
   try {
     const s = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ exact:'environment' }}, audio:false });
@@ -101,7 +102,7 @@ let ocrRunning = false;
   video.srcObject = s; await video.play();
 })();
 
-/* 유틸 */
+/* ===== 보조 ===== */
 function clamp(v, min, max){ return Math.max(min, Math.min(max, v)); }
 function parseModelDevice(raw) {
   const original = (raw || '').toString().trim();
@@ -113,33 +114,20 @@ function parseModelDevice(raw) {
   if (m1)  return { model: MAP[m1[1]] || '-', deviceId: original, raw: original };
   return { model: '-', deviceId: '-', raw: original };
 }
-function drawBadge(text, x = 20, y = 36) {
+function drawBadge(text, x=16, y=12){
   if (!text) return;
   const pad = 12;
-  viewCtx.font = 'bold 26px system-ui,-apple-system,Segoe UI,Roboto';
-  const w = viewCtx.measureText(text).width + pad * 2;
+  ctx.font = 'bold 26px system-ui,-apple-system,Segoe UI,Roboto';
+  const w = ctx.measureText(text).width + pad * 2;
   const h = 40;
-  x = clamp(x - 6, 12, viewCvs.width - w - 8);   // 살짝 더 좌측
-  y = clamp(y - 6, 32, viewCvs.height - h - 8);  // 살짝 더 윗쪽, 최소 32px
-  viewCtx.fillStyle = 'rgba(0,0,0,0.65)';
-  viewCtx.fillRect(x, y, w, h);
-  viewCtx.fillStyle = '#fff';
-  viewCtx.fillText(text, x + pad * 0.6, y + 28);
-  badgePos = { x, y };
+  x = clamp(x, 8, canvas.width - w - 8);
+  y = clamp(y, 8, canvas.height - h - 8);
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(text, x + pad * 0.6, y + 28);
 }
-function computeBadgePosFromQR(loc){
-  try{
-    const tl = loc.topLeftCorner || loc.topLeft || loc.topLeftFinderPattern;
-    if (!tl) return { x: 20, y: 36 };
-    // QR 좌상단 기준에서 약간 '좌측/윗쪽'으로 당김
-    const rawX = tl.x - 24;
-    const rawY = tl.y - 24;
-    const x = clamp(rawX, 12, viewCvs.width - 100);
-    const y = clamp(rawY, 32, viewCvs.height - 60);
-    return { x, y };
-  }catch{ return { x:20, y:36 }; }
-}
-function populatePanel(d) {
+function populatePanel(d){
   document.getElementById('ocrPanel').style.display = 'block';
   r_shipDate.textContent = d.shipDate || '-';
   r_name.textContent     = d.name     || '-';
@@ -149,154 +137,152 @@ function populatePanel(d) {
   r_deviceId.textContent = d.deviceId || '-';
   r_invoice.textContent  = d.invoice  || '-';
 }
+function scanQRFromCanvas() {
+  try {
+    const img = ctx.getImageData(0,0,canvas.width,canvas.height);
+    const code = jsQR(img.data, img.width, img.height, { inversionAttempts:'attemptBoth' });
+    return code ? { text: code.data, loc: code.location } : { text:'', loc:null };
+  } catch { return { text:'', loc:null }; }
+}
 function canvasToBlobResized(fromCanvas, cb) {
-  const maxW = 1400;
+  const maxW = 1000;
   const scale = Math.min(1, maxW / fromCanvas.width);
   if (scale < 1) {
     const tmp = document.createElement('canvas');
     tmp.width = Math.round(fromCanvas.width * scale);
     tmp.height = Math.round(fromCanvas.height * scale);
-    tmp.getContext('2d', { willReadFrequently: true })
-       .drawImage(fromCanvas, 0, 0, tmp.width, tmp.height);
-    tmp.toBlob(cb, 'image/jpeg', 0.75);
+    tmp.getContext('2d', { willReadFrequently: true }).drawImage(fromCanvas, 0, 0, tmp.width, tmp.height);
+    tmp.toBlob(cb, 'image/jpeg', 0.6);
   } else {
-    fromCanvas.toBlob(cb, 'image/jpeg', 0.75);
+    fromCanvas.toBlob(cb, 'image/jpeg', 0.6);
   }
 }
-function downloadCanvas(filename){
-  viewCvs.toBlob((blob)=>{
-    const a=document.createElement('a');
-    a.href=URL.createObjectURL(blob);
-    a.download=filename;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
-  },'image/jpeg',0.9);
-}
 
-/* 촬영 */
+/* ===== 촬영 ===== */
 document.getElementById('captureBtn').addEventListener('click', () => {
   const w = video.videoWidth, h = video.videoHeight;
   if (!w || !h) return alert('카메라 초기화 대기 후 다시 시도');
 
-  // 두 캔버스에 원본 프레임 복제
-  viewCvs.width = ocrCvs.width = w;
-  viewCvs.height = ocrCvs.height = h;
-  viewCtx.drawImage(video, 0, 0, w, h);
-  ocrCtx.drawImage(video, 0, 0, w, h);
-  viewCvs.style.display = 'block';
+  canvas.width = w; canvas.height = h;
+  ctx.drawImage(video, 0, 0, w, h);
+  canvas.style.display = 'block';
 
-  // 기본값
-  const base = { shipDate: new Date().toISOString().slice(0,10), name:'-', phone:'-', addr:'-', model:'-', deviceId:'-', invoice:'-' };
+  const base = {
+    shipDate: new Date().toISOString().slice(0,10),
+    name:'-', phone:'-', addr:'-', model:'-', deviceId:'-', invoice:'-'
+  };
 
-  // QR → 배지는 화면용에만 (살짝 좌측/윗쪽)
-  let qrText = '';
-  try {
-    const img = viewCtx.getImageData(0,0,viewCvs.width,viewCvs.height);
-    const code = jsQR(img.data, img.width, img.height, { inversionAttempts:'attemptBoth' });
-    if (code && code.data) {
-      qrText = code.data;
-      const md = parseModelDevice(code.data);
-      base.model = md.model; base.deviceId = md.deviceId;
-      const pos = computeBadgePosFromQR(code.location || {});
-      drawBadge(`${md.model} / ${md.deviceId}`, pos.x, pos.y);
-    } else {
-      drawBadge('', 20, 36);
+  // QR → 기종/기기번호 배지
+  const { text:qr, loc } = scanQRFromCanvas();
+  if (qr) {
+    const md = parseModelDevice(qr);
+    base.model = md.model; base.deviceId = md.deviceId;
+    badgeText = `${base.model} / ${base.deviceId}`;
+    let x = 16, y = 12;
+    if (loc && loc.topLeftCorner) {
+      x = Math.max(16, loc.topLeftCorner.x - 8);
+      y = Math.max(12, loc.topLeftCorner.y - 48);
     }
-  } catch(e){ console.log('QR fail', e); }
+    badgePos = { x, y };
+    drawBadge(badgeText, x, y);
+  } else {
+    badgeText = ''; badgePos = { x:16, y:12 };
+  }
 
   populatePanel(base);
 
-  // OCR 호출은 ocrCvs(배지 없음)로
+  // OCR 호출 (프리뷰 8초, 정식 15초)
   if (ocrRunning) return;
   ocrRunning = true;
+  canvasToBlobResized(canvas, async (blob) => {
+    warmBackend();
 
-  canvasToBlobResized(ocrCvs, async (blob) => {
     // 프리뷰
     try {
       const fd1 = new FormData();
       fd1.append('image', blob, 'capture.jpg');
-      fd1.append('qr_text', qrText || '');
-      fd1.append('dry', 1);
-      const r1 = await fetch(`${API_BASE}/process-ocr/`, { method:'POST', body:fd1 });
-      const a1 = await r1.json();
-      const d1 = a1.data || {};
-      const merged1 = {
-        shipDate: d1['출고일']   || base.shipDate,
-        name:     d1['대여자명'] || base.name,
-        phone:    d1['전화번호'] || base.phone,
-        addr:     d1['주소']     || base.addr,
-        deviceId: d1['기기번호'] || base.deviceId,
-        model:    d1['기종']     || base.model,
-        invoice:  d1['송장번호'] || base.invoice
-      };
-      ocrPreview = merged1;
-      populatePanel(merged1);
-    } catch(e){ console.log('프리뷰 실패', e); ocrPreview = base; populatePanel(base); }
+      fd1.append('qr_text', qr || '');
+      const r1 = await fetchWithTimeout(`${API_BASE}/preview-ocr`, { method:'POST', body:fd1 }, 8000);
+      if (r1.ok) {
+        const a1 = await r1.json();
+        const d1 = a1.data || {};
+        const merged1 = {
+          shipDate: d1['출고일']   || base.shipDate,
+          name:     d1['대여자명'] || base.name,
+          phone:    d1['전화번호'] || base.phone,
+          addr:     d1['주소']     || base.addr,
+          deviceId: d1['기기번호'] || base.deviceId,
+          model:    d1['기종']     || base.model,
+          invoice:  d1['송장번호'] || base.invoice
+        };
+        ocrPreview = merged1;
+        populatePanel(merged1);
+      }
+    } catch(e){ console.log('프리뷰 실패/타임아웃', e); ocrPreview = base; populatePanel(base); }
 
-    // 정식OCR(쓰기 없이) 덮어쓰기
+    // 정식 (no_write=1)
     try {
       const fd2 = new FormData();
       fd2.append('image', blob, 'review.jpg');
-      fd2.append('qr_text', qrText || '');
+      fd2.append('qr_text', qr || '');
       fd2.append('no_write', 1);
-      const r2 = await fetch(`${API_BASE}/process-ocr/`, { method:'POST', body:fd2 });
-      const a2 = await r2.json();
-      if (r2.ok && (a2.status === 'review' || a2.status === 'success')) {
+      const r2 = await fetchWithTimeout(`${API_BASE}/process-ocr/`, { method:'POST', body:fd2 }, 15000);
+      if (r2.ok) {
+        const a2 = await r2.json();
         const d2 = a2.data || {};
         const merged2 = {
-          shipDate: d2['출고일']   || ocrPreview.shipDate,
-          name:     d2['대여자명'] || ocrPreview.name,
-          phone:    d2['전화번호'] || ocrPreview.phone,
-          addr:     d2['주소']     || ocrPreview.addr,
-          deviceId: d2['기기번호'] || ocrPreview.deviceId,
-          model:    d2['기종']     || ocrPreview.model,
-          invoice:  d2['송장번호'] || ocrPreview.invoice
+          shipDate: d2['출고일']   || (ocrPreview||base).shipDate,
+          name:     d2['대여자명'] || (ocrPreview||base).name,
+          phone:    d2['전화번호'] || (ocrPreview||base).phone,
+          addr:     d2['주소']     || (ocrPreview||base).addr,
+          deviceId: d2['기기번호'] || (ocrPreview||base).deviceId,
+          model:    d2['기종']     || (ocrPreview||base).model,
+          invoice:  d2['송장번호'] || (ocrPreview||base).invoice
         };
         ocrPreview = merged2;
         populatePanel(merged2);
       }
-    } catch(e){ console.log('정식OCR 실패', e); }
+    } catch(e){ console.log('정식 실패/타임아웃', e); }
     finally { ocrRunning = false; }
   });
 });
 
-/* 확인(엑셀 저장) */
+/* ===== 확인(엑셀 저장 + 배지 그린 사진 다운로드) ===== */
 document.getElementById('confirmBtn').addEventListener('click', async () => {
   if (!ocrPreview) return alert('인식 결과가 없습니다. 먼저 촬영하세요.');
   const btn = document.getElementById('confirmBtn');
   btn.disabled = true;
 
-  try {
-    // 1) 배지 얹은 사진 단말 저장
-    const ts = new Date().toISOString().replace(/[-:T.JZ]/g,'').slice(0,14);
-    downloadCanvas(`scan_${ts}.jpg`);
+  // 배지 없는 경우에도 한번 더 그려서 저장
+  const label = badgeText || `${r_model.textContent} / ${r_deviceId.textContent}`;
+  if (label.trim() !== '/') drawBadge(label, badgePos.x, badgePos.y);
+  // 사진 로컬 저장
+  const ts = new Date().toISOString().replace(/[:.TZ]/g,'').slice(0,14);
+  const a = document.createElement('a');
+  canvas.toBlob((b)=>{ a.href = URL.createObjectURL(b); a.download = `scan_${ts}.jpg`; a.click(); }, 'image/jpeg', 0.7);
 
-    // 2) 인식값 엑셀 저장
-    const res = await fetch(`${API_BASE}/save-result`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+  try{
+    const res = await fetch(`${API_BASE}/save-result`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
       body: JSON.stringify(ocrPreview)
     });
     const api = await res.json();
-
-    if (res.ok && api.status === 'success') {
+    if (res.ok && api.status === 'success'){
       alert('엑셀 저장 완료');
-    } else if (api.write_error && api.write_error.error === 'no_access_token') {
-      alert('엑셀 저장을 위해 먼저 로그인하세요.');
-      window.location.href = `${API_BASE}/login`;
+    } else if (api.write_error && api.write_error.error === 'no_access_token'){
+      alert('엑셀 저장을 위해 로그인이 필요합니다.');
+      location.href = `${API_BASE}/login`;
     } else {
       alert('저장 실패: ' + JSON.stringify(api));
     }
-  } catch (e) {
+  } catch(e){
     alert('서버 전송 실패: ' + e.message);
-  } finally {
-    btn.disabled = false;
-  }
+  } finally { btn.disabled = false; }
 });
 </script>
 </body>
 </html>
-
 
 
 
