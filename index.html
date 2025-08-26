@@ -43,7 +43,7 @@
   </div>
 
 <script>
-const APP_VER  = "2025-08-26-01";
+const APP_VER  = "2025-08-26-02";
 const API_BASE = "https://rent-label-api-client-docker.onrender.com";
 
 if ('serviceWorker' in navigator) {
@@ -66,6 +66,19 @@ let badgeText   = '';
 let badgePos    = { x: 24, y: 24 };
 let ocrPreview  = null;
 let captureBusy = false;
+
+// fetch with timeout to avoid long wait
+async function fetchWithTimeout(resource, options = {}) {
+  const { timeout = 3000 } = options; // 3s
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+  try {
+    const res = await fetch(resource, { ...options, signal: controller.signal });
+    return res;
+  } finally {
+    clearTimeout(id);
+  }
+}
 
 (async () => {
   try {
@@ -162,7 +175,6 @@ document.getElementById('captureBtn').addEventListener('click', () => {
     name:'-', phone:'-', addr:'-', model:'-', deviceId:'-', invoice:'-'
   };
 
-  // QR → 배지
   const { text, loc } = scanQRFromCanvas();
   if (text) {
     const md = parseModelDevice(text);
@@ -179,18 +191,18 @@ document.getElementById('captureBtn').addEventListener('click', () => {
     badgeText = ''; badgePos = { x:24, y:24 };
   }
 
-  // 즉시 표시
+  // 즉시 패널 표기
   ocrPreview = { ...base };
   populatePanel(ocrPreview);
 
-  // 프리뷰 OCR (빠르고 가벼운 쪽만 사용)
+  // 초경량 프리뷰(3초 타임아웃)
   canvasToBlobResized(async (blob) => {
     try {
       const fd = new FormData();
       const { text:qr } = scanQRFromCanvas();
       fd.append('image', blob, 'preview.jpg');
       fd.append('qr_text', qr || '');
-      const res = await fetch(`${API_BASE}/preview-ocr`, { method:'POST', body:fd });
+      const res = await fetchWithTimeout(`${API_BASE}/preview-ocr`, { method:'POST', body:fd, timeout: 3000 });
       if (!res.ok) throw new Error('preview-ocr ' + res.status);
       const api = await res.json();
       const d = api.data || {};
@@ -205,7 +217,7 @@ document.getElementById('captureBtn').addEventListener('click', () => {
       };
       populatePanel(ocrPreview);
     } catch (e) {
-      console.log('preview ocr error', e);
+      console.log('preview timeout or error', e.message || e);
     } finally {
       captureBusy = false;
     }
@@ -217,13 +229,11 @@ document.getElementById('confirmBtn').addEventListener('click', async () => {
   const btn = document.getElementById('confirmBtn');
   btn.disabled = true;
 
-  // 배지 그려두고 → 폰 저장
   const label = badgeText || `${r_model.textContent} / ${r_deviceId.textContent}`;
   if (label && label.trim() !== '/') drawBadge(label, badgePos.x, badgePos.y);
   const ts = new Date().toISOString().replace(/[-:T.]/g,'').slice(0,14);
   downloadCanvas(`scan_${ts}.jpg`);
 
-  // 한글 키로 정규화
   const payloadKR = {
     "출고일":   ocrPreview['출고일']   ?? ocrPreview.shipDate ?? "",
     "대여자명": ocrPreview['대여자명'] ?? ocrPreview.name     ?? "",
@@ -279,6 +289,7 @@ document.getElementById('confirmBtn').addEventListener('click', async () => {
 </script>
 </body>
 </html>
+
 
 
 
