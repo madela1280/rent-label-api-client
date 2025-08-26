@@ -287,17 +287,20 @@ def make_final_entry(qr_text: str, 송장_image_path: str):
 # 7) 초고속 프리뷰 (숫자 위주)
 # =========================
 def make_final_entry_fast(qr_text: str, 송장_image_path: str):
+    """
+    초경량 프리뷰:
+    - ROI 자르고 가로 800 축소
+    - 약한 한/영 OCR '1회'만 (재시도 없음)
+    - 전화/이름/주소만 빠르게 파싱
+    - 기종/기기번호는 QR로 즉시 결정
+    """
     roi = _crop_invoice_roi(송장_image_path)
-    roi = _resize_image(roi, 900)
+    roi = _resize_image(roi, 800)
 
-    # 약하게 1회, 너무 짧으면 한 번만 강하게
     txt = _ocr_text(_preprocess(roi, strong=False), allow_kor=True)
-    if len(re.sub(r"\s+", "", txt)) < 15:
-        txt = _ocr_text(_preprocess(roi, strong=True), allow_kor=True)
-
     lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
-    parsed = _parse_fields(lines)
 
+    parsed = _parse_fields(lines)
     model, device_id = _map_model_device(qr_text)
     ship_date = date.today().isoformat()
 
