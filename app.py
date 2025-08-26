@@ -258,6 +258,7 @@ def excel_append(row: list = Body(...)):
     token = _get_access_token()
     if not token:
         return JSONResponse({"error": "no_access_token"}, status_code=401)
+
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
     item_id = _get_drive_item_id(headers, FILE_NAME)
@@ -266,14 +267,15 @@ def excel_append(row: list = Body(...)):
 
     used = _HTTP.get(
         f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/usedRange",
-        headers=headers
+        headers=headers,
     ).json()
 
     address = used.get("address") or f"{SHEET_NAME}!A1:A1"
     try:
         last_row = int(address.split("!")[1].split(":")[1][1:])
-    except:
+    except Exception:
         last_row = 1
+
     next_row = last_row + 1
     target = f"A{next_row}:G{next_row}"
 
@@ -283,7 +285,11 @@ def excel_append(row: list = Body(...)):
         json={"values": [row]},
     )
     if resp.status_code != 200:
-        return JSONResponse({"error": "write_failed", "status": resp.status_code, "text": resp.text}, status_code=500)
+        return JSONResponse(
+            {"error": "write_failed", "status": resp.status_code, "text": resp.text},
+            status_code=500,
+        )
+
     return {"status": "ok", "range": target, "written": row}
 
 # -------------------------------
