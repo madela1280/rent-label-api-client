@@ -169,6 +169,30 @@ async def callback(request: Request):
     except Exception as e:
         return JSONResponse({"error": "callback_failed", "details": str(e)}, status_code=500)
 
+
+        # 토큰 파일 저장 (세션 없어도 이후 저장 가능)
+        try:
+            with open("access_token.txt", "w", encoding="utf-8") as f:
+                f.write(result.get("access_token", "") or "")
+            with open("refresh_token.txt", "w", encoding="utf-8") as f:
+                f.write(result.get("refresh_token", "") or "")
+        except:
+            pass
+
+        _save_cache(cache)  # 있으면 저장
+
+        # 세션은 선택 (없어도 저장엔 영향 없음)
+        claims = result.get("id_token_claims", {}) or {}
+        request.session.clear()
+        request.session["user"] = {
+            "name": claims.get("name"),
+            "upn": claims.get("preferred_username"),
+            "oid": claims.get("oid"),
+        }
+        return RedirectResponse("/me")
+    except Exception as e:
+        return JSONResponse({"error": "callback_failed", "details": str(e)}, status_code=500)
+
              app_, cache = _msal_app()
         result = app_.acquire_token_by_authorization_code(code, scopes=SCOPES, redirect_uri=REDIRECT_URI)
         if "access_token" not in result:
