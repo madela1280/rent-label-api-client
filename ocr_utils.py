@@ -287,18 +287,12 @@ def make_final_entry(qr_text: str, 송장_image_path: str):
 # 7) 초고속 프리뷰 (숫자 위주)
 # =========================
 def make_final_entry_fast(qr_text: str, 송장_image_path: str):
-    """
-    초고속 프리뷰(개선):
-    - ROI 자름 → 가로 1000 내로 축소
-    - 한/영 OCR 1회(약하게)로 '전화/이름/주소' 동시에 추출
-    - 규칙은 정식 OCR과 동일(_parse_fields 재사용)
-    """
     roi = _crop_invoice_roi(송장_image_path)
-    roi = _resize_image(roi, 1000)
+    roi = _resize_image(roi, 900)
 
-    # 한/영 OCR(약하게) 1회
+    # 약하게 1회, 너무 짧으면 한 번만 강하게
     txt = _ocr_text(_preprocess(roi, strong=False), allow_kor=True)
-    if len(re.sub(r"\s+", "", txt)) < 15:  # 너무 짧으면 한 번만 강하게
+    if len(re.sub(r"\s+", "", txt)) < 15:
         txt = _ocr_text(_preprocess(roi, strong=True), allow_kor=True)
 
     lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
@@ -316,4 +310,3 @@ def make_final_entry_fast(qr_text: str, 송장_image_path: str):
         "기종": model,
         "송장번호": "",
     }
-
