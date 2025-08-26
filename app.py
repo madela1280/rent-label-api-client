@@ -372,13 +372,13 @@ async def process_ocr(
 
         # 워크북에 쓸 행 구성
         row = [
-            result.get("출고일자", ""),
-            result.get("받는분", ""),
+            result.get("출고일", ""),
+            result.get("대여자명", ""),
             result.get("전화번호", ""),
             result.get("주소", ""),
             result.get("기기번호", ""),
             result.get("기종", ""),
-            result.get("운송장번호", ""),
+            result.get("송장번호", ""),
         ]
         ok, info = write_row_to_onedrive(row)
         if not ok:
@@ -410,13 +410,13 @@ def save_result(data: Dict[str, Any] = Body(...), background_tasks: BackgroundTa
         return default
 
     row = [
-        g("출고일자", "shipDate"),
+        g("출고일", "shipDate"),
         g("대여자명", "name"),
         g("전화번호", "phone"),
         g("주소", "addr"),
         g("기기번호", "deviceId"),
         g("기종", "model"),
-        g("운송장번호", "invoice"),
+        g("송장번호", "invoice"),
     ]
 
     if background_tasks:

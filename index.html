@@ -156,13 +156,13 @@ function drawBadge(text, x=16, y=12){
 }
 function populatePanel(d){
   document.getElementById('ocrPanel').style.display = 'block';
-  r_shipDate.textContent = d.shipDate || '-';
-  r_name.textContent     = d.name     || '-';
-  r_phone.textContent    = d.phone    || '-';
-  r_addr.textContent     = d.addr     || '-';
-  r_model.textContent    = d.model    || '-';
-  r_deviceId.textContent = d.deviceId || '-';
-  r_invoice.textContent  = d.invoice  || '-';
+  r_shipDate.textContent = d.shipDate || d['출고일']   || '-';
+  r_name.textContent     = d.name     || d['대여자명'] || '-';
+  r_phone.textContent    = d.phone    || d['전화번호'] || '-';
+  r_addr.textContent     = d.addr     || d['주소']     || '-';
+  r_model.textContent    = d.model    || d['기종']     || '-';
+  r_deviceId.textContent = d.deviceId || d['기기번호'] || '-';
+  r_invoice.textContent  = d.invoice  || d['송장번호'] || '-';
 }
 function scanQRFromCanvas() {
   try {

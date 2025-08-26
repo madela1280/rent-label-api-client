@@ -1,15 +1,15 @@
 # ocr_utils.py — 2025-08-26
-# 전화 인식 우선:
+# 전화번호 인식 우선:
 #  - 010으로 시작 → 항상 "010-가운데-****" 로 마스킹
 #  - 05xx로 시작 → "05xx-가운데-마지막" 12자리 그대로
 #  - 한 줄에 여러 개면 "가장 먼저 등장한 것" 하나만 사용
-# 이름 = 전화 "바로 앞"의 한글 2~8자(없으면 윗줄에서 추정)
-# 주소 = 이름 바로 아래 줄부터, 필요 시 다음 줄 이어붙임
+# 대여자명 = 전화번호"바로 앞"의 한글 2~8자(없으면 윗줄에서 추정)
+# 주소 = 대여자명 바로 아래 줄부터, 필요 시 다음 줄 이어붙임
 # 송장번호 = 이름 한 줄 위에서 ####-####-#### 우선
 
 import os, re
 from datetime import date
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 from PIL import Image, ImageOps, ImageFilter
 import pytesseract
 
@@ -47,7 +47,7 @@ def _resize(img: Image.Image, max_w:int=1400) -> Image.Image:
         return img.resize((max_w, int(h*s)))
     return img
 
-# -------- 전화/이름/주소/송장 --------
+# -------- 전화번호/대여자명/주소/송장번호 --------
 R_010  = re.compile(r"(010)[-\s\.]?(\d{3,4})[-\s\.]?(?:\d{0,4}|\*{4})")
 R_05XX = re.compile(r"(05\d{2})[-\s\.]?(\d{3,4})[-\s\.]?(\d{4})")
 R_INVOICE12 = re.compile(r"\b\d{4}[-\s]?\d{4}[-\s]?\d{4}\b")
@@ -63,7 +63,6 @@ def _looks_like_address(s:str)->bool:
     return any(t in s2 for t in ADDR_TOKENS) or bool(re.search(r"\d|\(|\)", s2))
 
 def _first_phone_in_line(line:str):
-    """같은 라인에서 010/05xx 중 '가장 먼저' 등장한 것 반환"""
     m010  = R_010.search(line)
     m05xx = R_05XX.search(line)
     if m010 and m05xx:
@@ -71,7 +70,6 @@ def _first_phone_in_line(line:str):
     return m010 or m05xx
 
 def _format_phone(m)->str:
-    """정규식 매치 → 포맷팅 규칙 적용"""
     if not m: return ""
     if m.re is R_010:
         mid = m.group(2)
@@ -91,24 +89,23 @@ def _parse_fields(lines: List[str]) -> dict:
     phone, name, addr, invoice = "", "", "", ""
     phone_i, name_i = -1, -1
 
-    # 1) 전화: 텍스트 순서상 '첫 번째'
+    # 1) 전화번호
     for i, ln in enumerate(clean):
         m = _first_phone_in_line(ln)
         if not m: continue
         phone = _format_phone(m)
         phone_i = i
-        # 같은 줄에서 이름 시도
         n = _name_left_of_phone(ln, m)
         if n: name, name_i = n, i
         break
 
-    # 못 찾으면 윗줄에서 이름 추정
+    # 윗줄에서 대여자명 추정
     if phone and not name and phone_i > 0:
         up = LABEL_NAME.sub("", clean[phone_i-1]).strip()
         k = re.findall(r"[가-힣]{2,8}", up)
         if k: name, name_i = k[-1], phone_i-1
 
-    # 2) 주소: 이름 줄 기준 아래 1~2줄
+    # 2) 주소
     base_i = name_i if name else phone_i
     if base_i >= 0:
         first  = LABEL_ADDR.sub("", clean[base_i+1]).strip() if base_i+1 < len(clean) else ""
@@ -118,7 +115,7 @@ def _parse_fields(lines: List[str]) -> dict:
         if second and _looks_like_address(second): parts.append(second)
         addr = " ".join(p.strip() for p in parts if p).strip()
 
-    # 3) 송장번호: 이름 '한 줄 위' 우선
+    # 3) 송장번호
     if name and name_i>0:
         up = clean[name_i-1].replace(" ","")
         m = R_INVOICE12.search(up)
@@ -162,9 +159,7 @@ def _roi_cv2(path:str):
         return None
 
 def _roi_ratio(path:str)->Image.Image:
-    """OpenCV 미사용 시: 화면 비율 기반으로 중앙~하단 영역을 좁게 자름(속도↑)."""
     im = Image.open(path); W, H = im.size
-    # 좌 5% ~ 우 90%, 상 30% ~ 하 78% (받는분/주소 영역에 맞춤)
     x1 = int(W * 0.05)
     y1 = int(H * 0.30)
     x2 = int(W * 0.90)
@@ -182,7 +177,6 @@ def _try_ocr(path:str)->str:
     if len(re.sub(r"\s+","",t)) < 18:
         t2 = _ocr_text(_preprocess(roi, True), psm=6)
         if len(re.sub(r"\s+","",t2)) > len(re.sub(r"\s+","",t)): t = t2
-    # 너무 빈약하면 전체 이미지
     parsed = _parse_fields([ln for ln in t.splitlines() if ln.strip()])
     if not (parsed.get("전화번호") or parsed.get("주소") or parsed.get("대여자명") or parsed.get("송장번호")):
         full = Image.open(path); full = _resize(full, 1600)
@@ -201,7 +195,8 @@ def make_final_entry(qr_text:str, 송장_image_path:str):
     parsed = _parse_fields(lines)
     model, device_id = _map_model_device(qr_text)
     ship_date = date.today().isoformat()
-    return {
+
+    result = {
         "출고일": ship_date,
         "대여자명": parsed.get("대여자명",""),
         "전화번호": parsed.get("전화번호",""),
@@ -210,23 +205,15 @@ def make_final_entry(qr_text:str, 송장_image_path:str):
         "기종": model,
         "송장번호": parsed.get("송장번호",""),
     }
+    return result
 
 def make_final_entry_fast(qr_text:str, 송장_image_path:str):
-    """
-    초고속 프리뷰:
-    - ROI 좁게 자른 뒤, 중앙~하단 띠만 숫자 전용으로 OCR
-    - 전화번호만 '가장 먼저' 추출
-      * 010 → 010-가운데-**** (항상 마스킹)
-      * 05xx → 05xx-가운데-마지막 (12자리 그대로)
-    """
     roi = _crop_roi(송장_image_path)
     roi = _resize(roi, 900)
 
-    # 전화가 주로 있는 중앙~하단 띠만 스캔
     W, H = roi.size
     band = roi.crop((int(W*0.05), int(H*0.40), int(W*0.95), int(H*0.78)))
 
-    # 숫자/하이픈 전용 (빠름)
     cfg_fast = "--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789-"
     txt = pytesseract.image_to_string(_preprocess(band, strong=False), config=cfg_fast, lang="eng")
     lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
@@ -235,21 +222,20 @@ def make_final_entry_fast(qr_text:str, 송장_image_path:str):
     for ln in lines:
         m010  = R_010.search(ln)
         m05xx = R_05XX.search(ln)
-        # 한 줄에 둘 다 있으면 앞에 나온 쪽 채택
         m = m010 if (m010 and (not m05xx or m010.start() < m05xx.start())) else (m05xx or None)
         if not m:
             continue
         if m.re is R_010:
-            mid = m.group(2)  # 가운데 3~4자리
+            mid = m.group(2)
             phone = f"010-{mid}-****"
         else:
             phone = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-        break  # "가장 먼저" 하나만 사용
+        break
 
     ship_date = date.today().isoformat()
     model, device_id = _map_model_device(qr_text)
 
-    return {
+    result = {
         "출고일": ship_date,
         "대여자명": "",
         "전화번호": phone,
@@ -258,3 +244,5 @@ def make_final_entry_fast(qr_text:str, 송장_image_path:str):
         "기종": model,
         "송장번호": "",
     }
+    return result
+
