@@ -162,8 +162,14 @@ def _roi_cv2(path:str):
         return None
 
 def _roi_ratio(path:str)->Image.Image:
-    im = Image.open(path); W,H = im.size
-    return im.crop((int(W*0.04), int(H*0.25), int(W*0.90), int(H*0.82)))
+    """OpenCV 미사용 시: 화면 비율 기반으로 중앙~하단 영역을 좁게 자름(속도↑)."""
+    im = Image.open(path); W, H = im.size
+    # 좌 5% ~ 우 90%, 상 30% ~ 하 78% (받는분/주소 영역에 맞춤)
+    x1 = int(W * 0.05)
+    y1 = int(H * 0.30)
+    x2 = int(W * 0.90)
+    y2 = int(H * 0.78)
+    return im.crop((x1, y1, x2, y2))
 
 def _crop_roi(path:str)->Image.Image:
     roi = _roi_cv2(path) if HAS_CV2 else None
@@ -206,18 +212,49 @@ def make_final_entry(qr_text:str, 송장_image_path:str):
     }
 
 def make_final_entry_fast(qr_text:str, 송장_image_path:str):
-    roi = _crop_roi(송장_image_path); roi = _resize(roi, 1100)
-    txt = _ocr_text(_preprocess(roi, False), psm=6)
+    """
+    초고속 프리뷰:
+    - ROI 좁게 자른 뒤, 중앙~하단 띠만 숫자 전용으로 OCR
+    - 전화번호만 '가장 먼저' 추출
+      * 010 → 010-가운데-**** (항상 마스킹)
+      * 05xx → 05xx-가운데-마지막 (12자리 그대로)
+    """
+    roi = _crop_roi(송장_image_path)
+    roi = _resize(roi, 900)
+
+    # 전화가 주로 있는 중앙~하단 띠만 스캔
+    W, H = roi.size
+    band = roi.crop((int(W*0.05), int(H*0.40), int(W*0.95), int(H*0.78)))
+
+    # 숫자/하이픈 전용 (빠름)
+    cfg_fast = "--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789-"
+    txt = pytesseract.image_to_string(_preprocess(band, strong=False), config=cfg_fast, lang="eng")
     lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
-    parsed = _parse_fields(lines)
-    model, device_id = _map_model_device(qr_text)
+
+    phone = ""
+    for ln in lines:
+        m010  = R_010.search(ln)
+        m05xx = R_05XX.search(ln)
+        # 한 줄에 둘 다 있으면 앞에 나온 쪽 채택
+        m = m010 if (m010 and (not m05xx or m010.start() < m05xx.start())) else (m05xx or None)
+        if not m:
+            continue
+        if m.re is R_010:
+            mid = m.group(2)  # 가운데 3~4자리
+            phone = f"010-{mid}-****"
+        else:
+            phone = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+        break  # "가장 먼저" 하나만 사용
+
     ship_date = date.today().isoformat()
+    model, device_id = _map_model_device(qr_text)
+
     return {
         "출고일": ship_date,
-        "대여자명": parsed.get("대여자명",""),
-        "전화번호": parsed.get("전화번호",""),
-        "주소": parsed.get("주소",""),
+        "대여자명": "",
+        "전화번호": phone,
+        "주소": "",
         "기기번호": device_id,
         "기종": model,
-        "송장번호": parsed.get("송장번호",""),
+        "송장번호": "",
     }

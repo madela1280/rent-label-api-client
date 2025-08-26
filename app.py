@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import httpx
 import requests
+_HTTP = requests.Session()  # ← 추가: 재사용 세션(Keep-Alive)
 import msal
 from uuid import uuid4
 from typing import Optional, Dict, Any
@@ -242,7 +243,7 @@ _DRIVE_ITEM_ID_CACHE = {"name": None, "id": None}
 def _get_drive_item_id(headers, file_name):
     if _DRIVE_ITEM_ID_CACHE["name"] == file_name and _DRIVE_ITEM_ID_CACHE["id"]:
         return _DRIVE_ITEM_ID_CACHE["id"]
-    search = requests.get(
+    search = _HTTP.get(
         f"{GRAPH}/me/drive/root/search(q='{file_name}')?$top=1", headers=headers
     ).json()
     items = search.get("value", [])
@@ -263,17 +264,20 @@ def excel_append(row: list = Body(...)):
     if not item_id:
         return JSONResponse({"error": "file_not_found", "details": FILE_NAME}, status_code=404)
 
-    used = requests.get(
+    used = _HTTP.get(
         f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/usedRange",
         headers=headers
     ).json()
+
     address = used.get("address") or f"{SHEET_NAME}!A1:A1"
-    try: last_row = int(address.split("!")[1].split(":")[1][1:])
-    except: last_row = 1
+    try:
+        last_row = int(address.split("!")[1].split(":")[1][1:])
+    except:
+        last_row = 1
     next_row = last_row + 1
     target = f"A{next_row}:G{next_row}"
 
-    resp = requests.patch(
+    resp = _HTTP.patch(
         f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/range(address='{target}')",
         headers=headers,
         json={"values": [row]},
@@ -294,19 +298,19 @@ def write_row_to_onedrive(row):
     if not item_id:
         return False, {"error":"file_not_found","file":FILE_NAME}
 
-    used = requests.get(
-        f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/usedRange", headers=headers
-    ).json()
+    used = _HTTP.get(
+    f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/usedRange", headers=headers
+).json()
     address = used.get("address") or f"{SHEET_NAME}!A1:A1"
     try: last_row = int(address.split("!")[1].split(":")[1][1:])
     except: last_row = 1
     next_row = last_row + 1
     target = f"A{next_row}:G{next_row}"
 
-    resp = requests.patch(
-        f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/range(address='{target}')",
-        headers=headers, json={"values":[row]}
-    )
+   resp = _HTTP.patch(
+    f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/range(address='{target}')",
+    headers=headers, json={"values":[row]}
+)
     if resp.status_code != 200:
         return False, {"error":"write_failed","status":resp.status_code,"text":resp.text}
     return True, {"range":target}

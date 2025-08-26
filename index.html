@@ -172,16 +172,17 @@ function scanQRFromCanvas() {
   } catch { return { text:'', loc:null }; }
 }
 function canvasToBlobResized(fromCanvas, cb) {
-  const maxW = 1000;
+  const maxW = 900; // 더 작게
   const scale = Math.min(1, maxW / fromCanvas.width);
   if (scale < 1) {
     const tmp = document.createElement('canvas');
     tmp.width = Math.round(fromCanvas.width * scale);
     tmp.height = Math.round(fromCanvas.height * scale);
-    tmp.getContext('2d', { willReadFrequently: true }).drawImage(fromCanvas, 0, 0, tmp.width, tmp.height);
-    tmp.toBlob(cb, 'image/jpeg', 0.6);
+    tmp.getContext('2d', { willReadFrequently: true })
+       .drawImage(fromCanvas, 0, 0, tmp.width, tmp.height);
+    tmp.toBlob(cb, 'image/jpeg', 0.5); // 품질 0.5
   } else {
-    fromCanvas.toBlob(cb, 'image/jpeg', 0.6);
+    fromCanvas.toBlob(cb, 'image/jpeg', 0.5);
   }
 }
 
@@ -226,60 +227,58 @@ if (!window.__evtBound){
     populatePanel(base);
 
     // OCR 호출 (프리뷰 8초, 정식 15초)
-    if (ocrRunning) return;
-    ocrRunning = true;
-    canvasToBlobResized(canvas, async (blob) => {
-      warmBackend();
+   // === OCR 병렬 전송 (프리뷰 + 정식) ===
+if (ocrRunning) return;
+ocrRunning = true;
+canvasToBlobResized(canvas, async (blob) => {
+  warmBackend();
+  const { text: qr } = scanQRFromCanvas();
 
-      // 프리뷰
-      try {
-        const fd1 = new FormData();
-        fd1.append('image', blob, 'capture.jpg');
-        fd1.append('qr_text', qr || '');
-        const r1 = await fetchWithTimeout(`${API_BASE}/preview-ocr`, { method:'POST', body:fd1 }, 8000);
-        if (r1.ok) {
-          const a1 = await r1.json();
-          const d1 = a1.data || {};
-          const merged1 = {
-            shipDate: d1['출고일']   || base.shipDate,
-            name:     d1['대여자명'] || base.name,
-            phone:    d1['전화번호'] || base.phone,
-            addr:     d1['주소']     || base.addr,
-            deviceId: d1['기기번호'] || base.deviceId,
-            model:    d1['기종']     || base.model,
-            invoice:  d1['송장번호'] || base.invoice
-          };
-          ocrPreview = merged1;
-          populatePanel(merged1);
-        }
-      } catch(e){ console.log('프리뷰 실패/타임아웃', e); ocrPreview = base; populatePanel(base); }
-
-      // 정식 (no_write=1)
-      try {
-        const fd2 = new FormData();
-        fd2.append('image', blob, 'review.jpg');
-        fd2.append('qr_text', qr || '');
-        fd2.append('no_write', 1);
-        const r2 = await fetchWithTimeout(`${API_BASE}/process-ocr/`, { method:'POST', body:fd2 }, 15000);
-        if (r2.ok) {
-          const a2 = await r2.json();
-          const d2 = a2.data || {};
-          const merged2 = {
-            shipDate: d2['출고일']   || (ocrPreview||base).shipDate,
-            name:     d2['대여자명'] || (ocrPreview||base).name,
-            phone:    d2['전화번호'] || (ocrPreview||base).phone,
-            addr:     d2['주소']     || (ocrPreview||base).addr,
-            deviceId: d2['기기번호'] || (ocrPreview||base).deviceId,
-            model:    d2['기종']     || (ocrPreview||base).model,
-            invoice:  d2['송장번호'] || (ocrPreview||base).invoice
-          };
-          ocrPreview = merged2;
-          populatePanel(merged2);
-        }
-      } catch(e){ console.log('정식 실패/타임아웃', e); }
-      finally { ocrRunning = false; }
-    });
+  const baseMerged = (src) => ({
+    shipDate: (src && src['출고일'])   || base.shipDate,
+    name:     (src && src['대여자명']) || base.name,
+    phone:    (src && src['전화번호']) || base.phone,
+    addr:     (src && src['주소'])     || base.addr,
+    deviceId: (src && src['기기번호']) || base.deviceId,
+    model:    (src && src['기종'])     || base.model,
+    invoice:  (src && src['송장번호']) || base.invoice
   });
+
+  const previewReq = (async () => {
+    const fd = new FormData();
+    fd.append('image', blob, 'p.jpg');
+    fd.append('qr_text', qr || '');
+    try {
+      const r = await fetchWithTimeout(`${API_BASE}/preview-ocr`, { method:'POST', body: fd }, 6000);
+      if (!r.ok) return null;
+      const j = await r.json();
+      return j.data || null;
+    } catch { return null; }
+  })();
+
+  const finalReq = (async () => {
+    const fd = new FormData();
+    fd.append('image', blob, 'f.jpg');
+    fd.append('qr_text', qr || '');
+    fd.append('no_write', 1);
+    try {
+      const r = await fetchWithTimeout(`${API_BASE}/process-ocr/`, { method:'POST', body: fd }, 12000);
+      if (!r.ok) return null;
+      const j = await r.json();
+      return j.data || null;
+    } catch { return null; }
+  })();
+
+    const first = await Promise.race([previewReq, finalReq]);
+  ocrPreview = baseMerged(first); populatePanel(ocrPreview);
+
+  const results = await Promise.allSettled([previewReq, finalReq]);
+  const better = results.map(s => s.status==='fulfilled' ? s.value : null).filter(Boolean).pop();
+  if (better) { ocrPreview = baseMerged(better); populatePanel(ocrPreview); }
+  ocrRunning = false;
+});
+
+});  
 
   /* 확인(엑셀 저장 + 사진저장) */
   document.getElementById('confirmBtn').addEventListener('click', async () => {
