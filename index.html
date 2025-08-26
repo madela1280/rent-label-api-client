@@ -226,59 +226,57 @@ if (!window.__evtBound){
 
     populatePanel(base);
 
-    // OCR 호출 (프리뷰 8초, 정식 15초)
-   // === OCR 병렬 전송 (프리뷰 + 정식) ===
-if (ocrRunning) return;
-ocrRunning = true;
-canvasToBlobResized(canvas, async (blob) => {
-  warmBackend();
-  const { text: qr } = scanQRFromCanvas();
+    // === OCR 병렬 전송 (프리뷰 + 정식) ===
+    if (ocrRunning) return;
+    ocrRunning = true;
+    canvasToBlobResized(canvas, async (blob) => {
+      warmBackend();
+      const { text: qr } = scanQRFromCanvas();
 
-  const baseMerged = (src) => ({
-    shipDate: (src && src['출고일'])   || base.shipDate,
-    name:     (src && src['대여자명']) || base.name,
-    phone:    (src && src['전화번호']) || base.phone,
-    addr:     (src && src['주소'])     || base.addr,
-    deviceId: (src && src['기기번호']) || base.deviceId,
-    model:    (src && src['기종'])     || base.model,
-    invoice:  (src && src['송장번호']) || base.invoice
-  });
+      const baseMerged = (src) => ({
+        shipDate: (src && src['출고일'])   || base.shipDate,
+        name:     (src && src['대여자명']) || base.name,
+        phone:    (src && src['전화번호']) || base.phone,
+        addr:     (src && src['주소'])     || base.addr,
+        deviceId: (src && src['기기번호']) || base.deviceId,
+        model:    (src && src['기종'])     || base.model,
+        invoice:  (src && src['송장번호']) || base.invoice
+      });
 
-  const previewReq = (async () => {
-    const fd = new FormData();
-    fd.append('image', blob, 'p.jpg');
-    fd.append('qr_text', qr || '');
-    try {
-      const r = await fetchWithTimeout(`${API_BASE}/preview-ocr`, { method:'POST', body: fd }, 6000);
-      if (!r.ok) return null;
-      const j = await r.json();
-      return j.data || null;
-    } catch { return null; }
-  })();
+      const previewReq = (async () => {
+        const fd = new FormData();
+        fd.append('image', blob, 'p.jpg');
+        fd.append('qr_text', qr || '');
+        try {
+          const r = await fetchWithTimeout(`${API_BASE}/preview-ocr`, { method:'POST', body: fd }, 6000);
+          if (!r.ok) return null;
+          const j = await r.json();
+          return j.data || null;
+        } catch { return null; }
+      })();
 
-  const finalReq = (async () => {
-    const fd = new FormData();
-    fd.append('image', blob, 'f.jpg');
-    fd.append('qr_text', qr || '');
-    fd.append('no_write', 1);
-    try {
-      const r = await fetchWithTimeout(`${API_BASE}/process-ocr/`, { method:'POST', body: fd }, 12000);
-      if (!r.ok) return null;
-      const j = await r.json();
-      return j.data || null;
-    } catch { return null; }
-  })();
+      const finalReq = (async () => {
+        const fd = new FormData();
+        fd.append('image', blob, 'f.jpg');
+        fd.append('qr_text', qr || '');
+        fd.append('no_write', 1);
+        try {
+          const r = await fetchWithTimeout(`${API_BASE}/process-ocr/`, { method:'POST', body: fd }, 12000);
+          if (!r.ok) return null;
+          const j = await r.json();
+          return j.data || null;
+        } catch { return null; }
+      })();
 
-    const first = await Promise.race([previewReq, finalReq]);
-  ocrPreview = baseMerged(first); populatePanel(ocrPreview);
+      const first = await Promise.race([previewReq, finalReq]);
+      ocrPreview = baseMerged(first); populatePanel(ocrPreview);
 
-  const results = await Promise.allSettled([previewReq, finalReq]);
-  const better = results.map(s => s.status==='fulfilled' ? s.value : null).filter(Boolean).pop();
-  if (better) { ocrPreview = baseMerged(better); populatePanel(ocrPreview); }
-  ocrRunning = false;
-});
-
-});  
+      const results = await Promise.allSettled([previewReq, finalReq]);
+      const better = results.map(s => s.status==='fulfilled' ? s.value : null).filter(Boolean).pop();
+      if (better) { ocrPreview = baseMerged(better); populatePanel(ocrPreview); }
+      ocrRunning = false;
+    });
+  });  
 
   /* 확인(엑셀 저장 + 사진저장) */
   document.getElementById('confirmBtn').addEventListener('click', async () => {
@@ -300,8 +298,8 @@ canvasToBlobResized(canvas, async (blob) => {
         body: JSON.stringify(ocrPreview)
       });
       const api = await res.json();
-      if (res.ok && api.status === 'success'){
-        alert('엑셀 저장 완료');
+      if (res.ok && (api.status === 'success' || api.status === 'accepted')){
+        alert('엑셀 저장 요청 완료');
       } else if (api.write_error && api.write_error.error === 'no_access_token'){
         alert('엑셀 저장을 위해 로그인이 필요합니다.');
         location.href = `${API_BASE}/login`;
@@ -316,6 +314,8 @@ canvasToBlobResized(canvas, async (blob) => {
 </script>
 </body>
 </html>
+
+
 
 
 

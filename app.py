@@ -6,7 +6,7 @@ import uuid
 
 from dotenv import load_dotenv; load_dotenv()
 
-from fastapi import FastAPI, Request, UploadFile, Form, File, Body
+from fastapi import FastAPI, Request, UploadFile, Form, File, Body, BackgroundTasks
 from fastapi.responses import RedirectResponse, JSONResponse, FileResponse, HTMLResponse, PlainTextResponse
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
@@ -207,15 +207,36 @@ async def callback_login2(request: Request):
 # -------------------------------
 SCOPES_GRAPH = ["User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All"]
 
+def _refresh_access_token():
+    try:
+        with open("refresh_token.txt", "r", encoding="utf-8") as f:
+            refresh_token = f.read().strip()
+        if not refresh_token:
+            return None
+        result = _build_msal_app().acquire_token_by_refresh_token(refresh_token, scopes=SCOPES)
+        if "access_token" in result:
+            with open("access_token.txt", "w", encoding="utf-8") as f:
+                f.write(result["access_token"])
+            if "refresh_token" in result:
+                with open("refresh_token.txt", "w", encoding="utf-8") as f:
+                    f.write(result["refresh_token"])
+            return result["access_token"]
+    except Exception:
+        return None
+
 def _get_access_token(request: Optional[Request] = None):
     if request is not None:
         tok = (request.session.get("tokens") or {}).get("access_token")
         if tok: return tok
     try:
         with open("access_token.txt", "r", encoding="utf-8") as f:
-            return f.read().strip() or None
+            token = f.read().strip() or None
+        if token:
+            return token
     except:
-        return None
+        pass
+    # access_token 없거나 만료 시 refresh로 재발급
+    return _refresh_access_token()
 
 @app.get("/graph/me")
 def graph_me(request: Request):
@@ -377,10 +398,10 @@ async def preview_ocr(qr_text: str = Form(""), image: UploadFile = File(...)):
         if os.path.exists(temp_path): os.remove(temp_path)
 
 # -------------------------------
-# Save result (추가: 수동 입력값도 저장 지원)
+# Save result (BackgroundTasks 적용)
 # -------------------------------
 @app.post("/save-result")
-def save_result(data: Dict[str, Any] = Body(...)):
+def save_result(data: Dict[str, Any] = Body(...), background_tasks: BackgroundTasks = None):
     def g(*keys, default=""):
         for k in keys:
             v = data.get(k)
@@ -390,17 +411,22 @@ def save_result(data: Dict[str, Any] = Body(...)):
 
     row = [
         g("출고일자", "shipDate"),
-        g("받는분", "name"),
+        g("대여자명", "name"),
         g("전화번호", "phone"),
         g("주소", "addr"),
         g("기기번호", "deviceId"),
         g("기종", "model"),
         g("운송장번호", "invoice"),
     ]
-    ok, info = write_row_to_onedrive(row)
-    if not ok:
-        return JSONResponse({"status": "write_failed", "write_error": info, "row": row}, status_code=500)
-    return {"status": "success", "write_info": info}
+
+    if background_tasks:
+        background_tasks.add_task(write_row_to_onedrive, row)
+        return {"status": "accepted", "row": row}
+    else:
+        ok, info = write_row_to_onedrive(row)
+        if not ok:
+            return JSONResponse({"status": "write_failed", "write_error": info, "row": row}, status_code=500)
+        return {"status": "success", "write_info": info}
 
 # -------------------------------
 # Misc (기본 설정)
@@ -411,6 +437,7 @@ def version(): return {"version": APP_VERSION}
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
 
 
 
