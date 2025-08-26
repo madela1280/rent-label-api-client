@@ -1,4 +1,4 @@
-﻿import os
+import os
 import shutil
 import hashlib
 import urllib.parse
@@ -14,13 +14,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import httpx
 import requests
-_HTTP = requests.Session()  # ??異붽?: ?ъ궗???몄뀡(Keep-Alive)
+_HTTP = requests.Session()  # 성능개선: 세션(Keep-Alive)
 import msal
 from uuid import uuid4
 from typing import Optional, Dict, Any
 
 from ocr_utils import make_final_entry, make_final_entry_fast
-# from excel_utils import append_row_to_excel   # ?꾩옱 誘몄궗????二쇱꽍泥섎━
+# from excel_utils import append_row_to_excel   # 현재 미사용으로 주석처리
 
 APP_VERSION = os.getenv("APP_VERSION", "2025-08-25-02")
 
@@ -47,7 +47,7 @@ app.add_middleware(
 )
 
 # -------------------------------
-# ENV & Constants (?먮낯 ?좎?)
+# ENV & Constants (기본 설정)
 # -------------------------------
 CLIENT_ID = os.getenv("CLIENT_ID", "41745db3-a5c5-4e6e-acd7-fc4ce18b1999")
 TENANT_ID = os.getenv("TENANT_ID", "405ba8a3-73ff-4423-8925-d9eda360cfa7")
@@ -59,7 +59,7 @@ AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 GRAPH = "https://graph.microsoft.com/v1.0"
 
 # -------------------------------
-# MSAL App ?앹꽦 (?먮낯 ?좎?)
+# MSAL App 생성 (기본 설정)
 # -------------------------------
 def _build_msal_app():
     if not CLIENT_SECRET:
@@ -71,7 +71,7 @@ def _build_msal_app():
     )
 
 # -------------------------------
-# 濡쒓렇??& 肄쒕갚 (?먮낯 ?좎?)
+# 로그인 & 콜백 (기본 설정)
 # -------------------------------
 @app.get("/login")
 def login(request: Request):
@@ -133,7 +133,7 @@ def me(request: Request):
     return JSONResponse({"status": "ok", "user": user})
 
 # -------------------------------
-# Debug endpoints (?먮낯 ?좎?)
+# Debug endpoints (기본 설정)
 # -------------------------------
 @app.get("/__debug/azure")
 def dbg_azure():
@@ -169,7 +169,7 @@ def whoami(request: Request):
         return {"error": str(e)}
 
 # -------------------------------
-# Static files (?먮낯 ?좎?)
+# Static files (기본 설정)
 # -------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -189,7 +189,7 @@ def manifest():
 def sw():
     return FileResponse(os.path.join(BASE_DIR, "sw.js"))
 
-# 肄쒕갚 寃쎈줈 蹂?????(?먮낯 ?좎?)
+# 콜백 경로 분기용(기본 설정)
 @app.get("/callback/")
 async def callback_slash(request: Request):
     return await callback(request)
@@ -203,7 +203,7 @@ async def callback_login2(request: Request):
     return await callback(request)
 
 # -------------------------------
-# Graph Helper (?먮낯 ?좎?)
+# Graph Helper (기본 설정)
 # -------------------------------
 SCOPES_GRAPH = ["User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All"]
 
@@ -233,12 +233,12 @@ def onedrive(request: Request):
                         headers={"Authorization": f"Bearer {token}"}).json()
 
 # -------------------------------
-# Excel Append (?먮낯 ?좎?)
+# Excel Append (기본 설정)
 # -------------------------------
-FILE_NAME = os.getenv("FILE_NAME", "?좎텞湲곗텧怨?xlsx")
-SHEET_NAME = os.getenv("WORKSHEET_NAME", "?좎텞湲곗텧怨?)
+FILE_NAME = os.getenv("FILE_NAME", "유축기출고.xlsx")
+SHEET_NAME = os.getenv("WORKSHEET_NAME", "유축기출고")
 
-# ?꾩뿭 罹먯떆
+# 파일 ID 캐시
 _DRIVE_ITEM_ID_CACHE = {"name": None, "id": None}
 def _get_drive_item_id(headers, file_name):
     if _DRIVE_ITEM_ID_CACHE["name"] == file_name and _DRIVE_ITEM_ID_CACHE["id"]:
@@ -293,7 +293,7 @@ def excel_append(row: list = Body(...)):
     return {"status": "ok", "range": target, "written": row}
 
 # -------------------------------
-# OneDrive Helper (?먮낯 ?좎?)
+# OneDrive Helper (기본 설정)
 # -------------------------------
 def write_row_to_onedrive(row):
     token = _get_access_token()
@@ -305,57 +305,59 @@ def write_row_to_onedrive(row):
         return False, {"error":"file_not_found","file":FILE_NAME}
 
     used = _HTTP.get(
-    f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/usedRange", headers=headers
-).json()
+        f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/usedRange", headers=headers
+    ).json()
     address = used.get("address") or f"{SHEET_NAME}!A1:A1"
-    try: last_row = int(address.split("!")[1].split(":")[1][1:])
-    except: last_row = 1
+    try: 
+        last_row = int(address.split("!")[1].split(":")[1][1:])
+    except: 
+        last_row = 1
     next_row = last_row + 1
     target = f"A{next_row}:G{next_row}"
 
-   resp = _HTTP.patch(
-    f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/range(address='{target}')",
-    headers=headers, json={"values":[row]}
-)
+    resp = _HTTP.patch(
+        f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/range(address='{target}')",
+        headers=headers, json={"values":[row]}
+    )
     if resp.status_code != 200:
         return False, {"error":"write_failed","status":resp.status_code,"text":resp.text}
     return True, {"range":target}
 
 # -------------------------------
-# OCR + Excel (?먮낯 ?좎?)
+# OCR + Excel (기본 설정)
 # -------------------------------
 @app.post("/process-ocr/")
 async def process_ocr(
     qr_text: str = Form(""),
     image: UploadFile = File(...),
-    dry: int = Form(0),          # 1=珥덇퀬???꾨━酉? 0=?뺤떇 OCR
-    no_write: int = Form(0)      # 1=?뺤떇 OCR ?섎릺 "?곌린 ?놁씠" 寃곌낵留?諛섑솚(寃?좎슜)
+    dry: int = Form(0),          # 1=미리보기(고속 처리), 0=정식 OCR
+    no_write: int = Form(0)      # 1=정식 OCR 되지만 "기록 없이" 결과만 반환(후속 검증용)
 ):
     temp_path = f"temp_{image.filename}"
     with open(temp_path, "wb") as f:
         shutil.copyfileobj(image.file, f)
     try:
         if dry:
-            # 鍮좊Ⅸ 誘몃━蹂닿린(?レ옄 ?꾩＜)
+            # 미리보기(숫자 위주)
             result = make_final_entry_fast(qr_text, temp_path)
             return {"status": "preview", "data": result}
 
-        # ?뺤떇 OCR
+        # 정식 OCR
         result = make_final_entry(qr_text, temp_path)
 
-        # ?붿껌??no_write=1 ?대㈃, ?묒? ?곗? ?딄퀬 寃곌낵留?諛섑솚(珥ъ쁺 吏곹썑 寃?좎슜)
+        # 옵션 no_write=1 이면, 파일에 기록 없이 결과만 반환(후속 검증용)
         if no_write:
             return {"status": "review", "data": result}
 
-        # ?ш린?쒕??곕뒗 ?ㅼ젣 ?곌린
+        # 워크북에 쓸 행 구성
         row = [
-            result.get("異쒓퀬??, ""),
-            result.get("??ъ옄紐?, ""),
-            result.get("?꾪솕踰덊샇", ""),
-            result.get("二쇱냼", ""),
-            result.get("湲곌린踰덊샇", ""),
-            result.get("湲곗쥌", ""),
-            result.get("?≪옣踰덊샇", ""),
+            result.get("출고일자", ""),
+            result.get("받는분", ""),
+            result.get("전화번호", ""),
+            result.get("주소", ""),
+            result.get("기기번호", ""),
+            result.get("기종", ""),
+            result.get("운송장번호", ""),
         ]
         ok, info = write_row_to_onedrive(row)
         if not ok:
@@ -375,7 +377,7 @@ async def preview_ocr(qr_text: str = Form(""), image: UploadFile = File(...)):
         if os.path.exists(temp_path): os.remove(temp_path)
 
 # -------------------------------
-# Save result (異붽?: ?꾨줎?몄뿉??蹂댁뿬以 媛?洹몃?濡????
+# Save result (추가: 수동 입력값도 저장 지원)
 # -------------------------------
 @app.post("/save-result")
 def save_result(data: Dict[str, Any] = Body(...)):
@@ -387,13 +389,13 @@ def save_result(data: Dict[str, Any] = Body(...)):
         return default
 
     row = [
-        g("異쒓퀬??, "shipDate"),
-        g("??ъ옄紐?, "name"),
-        g("?꾪솕踰덊샇", "phone"),
-        g("二쇱냼", "addr"),
-        g("湲곌린踰덊샇", "deviceId"),
-        g("湲곗쥌", "model"),
-        g("?≪옣踰덊샇", "invoice"),
+        g("출고일자", "shipDate"),
+        g("받는분", "name"),
+        g("전화번호", "phone"),
+        g("주소", "addr"),
+        g("기기번호", "deviceId"),
+        g("기종", "model"),
+        g("운송장번호", "invoice"),
     ]
     ok, info = write_row_to_onedrive(row)
     if not ok:
@@ -401,7 +403,7 @@ def save_result(data: Dict[str, Any] = Body(...)):
     return {"status": "success", "write_info": info}
 
 # -------------------------------
-# Misc (?먮낯 ?좎?)
+# Misc (기본 설정)
 # -------------------------------
 @app.get("/__version")
 def version(): return {"version": APP_VERSION}
@@ -409,6 +411,7 @@ def version(): return {"version": APP_VERSION}
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
 
 
 
