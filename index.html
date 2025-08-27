@@ -41,7 +41,7 @@
   </div>
 
 <script>
-const APP_VER  = "2025-08-26-stable";
+const APP_VER  = "2025-08-26-stable-2";   // 캐시 버전
 const API_BASE = "https://rent-label-api-client-docker.onrender.com";
 
 /* SW 강제 최신화 */
@@ -147,7 +147,7 @@ function drawBadge(text, x=16, y=12){
   ctx.fillText(text, x + pad * 0.6, y + 28);
 }
 
-/* 패널 표시: 한글 키만 사용 */
+/* 한글 키로만 패널 표시 */
 function populatePanel(d){
   document.getElementById('ocrPanel').style.display = 'block';
   r_shipDate.textContent = d['출고일']   || '-';
@@ -184,10 +184,10 @@ function canvasToBlobResized(fromCanvas, cb) {
   }
 }
 
-/* 값 병합: 빈 문자열/하이픈은 덮어쓰지 않음 */
+/* 빈 문자열/하이픈은 덮어쓰지 않음 */
 function mergePreferNonEmpty(prev, next){
   const keys = ["출고일","대여자명","전화번호","주소","기기번호","기종","송장번호"];
-  const out = Object.assign({}, prev);
+  const out = Object.assign({}, prev || {});
   if (next && typeof next === 'object'){
     for (const k of keys){
       const v = next[k];
@@ -215,7 +215,7 @@ if (!window.__evtBound){
     ctx.drawImage(video, 0, 0, w, h);
     canvas.style.display = 'block';
 
-    // 기본값(즉시 표시용) + QR 배지
+    // 기본값(즉시 표시) + QR 배지
     const base = {
       "출고일": new Date().toISOString().slice(0,10),
       "대여자명":"-", "전화번호":"-", "주소":"-", "기기번호":"-", "기종":"-", "송장번호":"-"
@@ -236,7 +236,7 @@ if (!window.__evtBound){
       badgeText = ''; badgePos = { x:16, y:12 };
     }
 
-    // 즉시 패널 표시 + 기본값을 ocrPreview에 먼저 세팅
+    // 기본값을 바로 세팅해서 "인식 결과가 없습니다" 방지
     ocrPreview = base;
     populatePanel(ocrPreview);
 
@@ -252,7 +252,7 @@ if (!window.__evtBound){
         fd.append('image', blob, 'p.jpg');
         fd.append('qr_text', qrText || '');
         try {
-          const r = await fetchWithTimeout(`${API_BASE}/preview-ocr`, { method:'POST', body: fd }, 6000);
+          const r = await fetchWithTimeout(`${API_BASE}/preview-ocr`, { method:'POST', body: fd }, 20000); // 20s
           if (!r.ok) return null;
           const j = await r.json();
           return j && j.data ? j.data : null;
@@ -265,21 +265,21 @@ if (!window.__evtBound){
         fd.append('qr_text', qrText || '');
         fd.append('no_write', 1);
         try {
-          const r = await fetchWithTimeout(`${API_BASE}/process-ocr/`, { method:'POST', body: fd }, 12000);
+          const r = await fetchWithTimeout(`${API_BASE}/process-ocr/`, { method:'POST', body: fd }, 25000); // 25s
           if (!r.ok) return null;
           const j = await r.json();
           return j && j.data ? j.data : null;
         } catch { return null; }
       })();
 
-      // 먼저 도착한 결과로 갱신 (없으면 base 유지)
+      // 먼저 온 결과 반영(없으면 base 그대로 유지)
       const first = await Promise.race([previewReq, finalReq]).catch(()=>null);
       if (first) {
         ocrPreview = mergePreferNonEmpty(ocrPreview, first);
         populatePanel(ocrPreview);
       }
 
-      // 두 결과 모두 수신 후, 더 좋은 값으로 최종 갱신
+      // 두 결과 모두 기다려 병합(빈값은 덮어쓰지 않음)
       const results = await Promise.allSettled([previewReq, finalReq]);
       for (const r of results){
         if (r.status === 'fulfilled' && r.value){
@@ -304,7 +304,7 @@ if (!window.__evtBound){
     const a = document.createElement('a');
     canvas.toBlob((b)=>{ a.href = URL.createObjectURL(b); a.download = `scan_${ts}.jpg`; a.click(); }, 'image/jpeg', 0.7);
 
-    // 백엔드 호환 위해 한글 + 영문 alias 모두 전달
+    // 서버 호환 위해 한글 + 영문 alias 모두 전달(백엔드 g()가 어떤 키를 보든 수용)
     const p = {
       ...ocrPreview,
       shipDate: ocrPreview["출고일"],
@@ -314,7 +314,7 @@ if (!window.__evtBound){
       deviceId: ocrPreview["기기번호"],
       model:    ocrPreview["기종"],
       invoice:  ocrPreview["송장번호"],
-      "출고일자": ocrPreview["출고일"],      // 혹시 서버가 이 키를 볼 수도 있어서
+      "출고일자": ocrPreview["출고일"],
       "받는분":   ocrPreview["대여자명"],
       "운송장번호": ocrPreview["송장번호"]
     };
@@ -325,11 +325,21 @@ if (!window.__evtBound){
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify(p)
       });
-      const api = await res.json();
+      let api = {};
+      try { api = await res.json(); } catch { api = {}; }
+
       if (res.ok && api.status === 'success'){
         alert('엑셀 저장 완료');
-      } else if (api.write_error && api.write_error.error === 'no_access_token'){
-        alert('엑셀 저장을 위해 로그인이 필요합니다.');
+      } else if (
+        res.status === 401 ||
+        (api && (
+          api.error === 'no_access_token' ||
+          (api.write_error && api.write_error.error === 'no_access_token') ||
+          api.status === 'accepted' ||
+          api.status === 'ocr_ok_but_write_failed'
+        ))
+      ){
+        alert('엑셀 저장을 위해 로그인이 필요합니다. 로그인 후 다시 시도하세요.');
         location.href = `${API_BASE}/login`;
       } else {
         alert('저장 실패: ' + JSON.stringify(api));
@@ -342,6 +352,7 @@ if (!window.__evtBound){
 </script>
 </body>
 </html>
+
 
 
 
