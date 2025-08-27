@@ -18,7 +18,7 @@ from typing import Optional, Dict, Any
 
 from ocr_utils import make_final_entry, make_final_entry_fast
 
-APP_VERSION = os.getenv("APP_VERSION", "2025-08-27-08")
+APP_VERSION = os.getenv("APP_VERSION", "2025-08-27-09")
 
 # -------------------------------
 # FastAPI & Session
@@ -108,7 +108,8 @@ async def callback(request: Request):
         "access_token": result.get("access_token", ""),
         "refresh_token": result.get("refresh_token", ""),
     }
-    return RedirectResponse("/me")
+    # 바로 홈으로 (무한루프/체감 혼란 방지)
+    return RedirectResponse("/")
 
 @app.get("/me")
 def me(request: Request):
@@ -116,15 +117,6 @@ def me(request: Request):
     if not user:
         return RedirectResponse("/login")
     return JSONResponse({"status": "ok", "user": user})
-
-@app.get("/whoami")
-def whoami(request: Request):
-    tokens = request.session.get("tokens") or {}
-    has_access = bool(tokens.get("access_token"))
-    return JSONResponse({
-        "has_user": bool(request.session.get("user")),
-        "has_access_token": has_access
-    }, status_code=200 if has_access else 401)
 
 # -------------------------------
 # Static files
@@ -317,6 +309,7 @@ def version(): return {"version": APP_VERSION}
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
 
 
 

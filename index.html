@@ -44,8 +44,7 @@
   <div id="toast"></div>
 
 <script>
-const APP_VER  = "2025-08-27-08";
-const API_BASE = ""; // 동일 오리진
+const APP_VER  = "2025-08-27-09"; // 캐시버전
 
 /* SW */
 if ('serviceWorker' in navigator) {
@@ -64,22 +63,18 @@ function toast(msg, ms=3000){
   }catch{}
 }
 
-/* helper: 응답본문 안전 파서 */
+/* 응답본문 안전 파서 */
 async function readBodySafe(res){
   try { return await res.clone().json(); } catch {}
   try { return await res.clone().text(); } catch {}
   return null;
 }
 
-/* fetch with timeout + 쿠키 */
-async function fetchWithTimeout(url, options={}, timeoutMs=30000){
-  const ctrl = new AbortController();
-  const t = setTimeout(()=>ctrl.abort(), timeoutMs);
-  try { return await fetch(url, {signal:ctrl.signal, credentials:'include', ...options}); }
-  finally { clearTimeout(t); }
+/* fetch (타임아웃 제거: AbortError 방지) */
+async function fetchNoAbort(url, options={}){
+  // credentials 포함 (세션 쿠키 유지)
+  return await fetch(url, { credentials:'include', ...options });
 }
-function warmBackend(){ fetchWithTimeout(`/__ping`, {}, 3000).catch(()=>{}); }
-warmBackend();
 
 /* 요소 */
 const video   = document.getElementById('preview');
@@ -176,9 +171,9 @@ function scanQRFromCanvas() {
   } catch { return { text:'', loc:null }; }
 }
 
-/* 압축 */
+/* 압축(더 작게) */
 function canvasToBlobResized(fromCanvas, cb) {
-  const maxW = 900;
+  const maxW = 800; // 더 작게
   const scale = Math.min(1, maxW / fromCanvas.width);
   if (scale < 1) {
     const tmp = document.createElement('canvas');
@@ -186,9 +181,9 @@ function canvasToBlobResized(fromCanvas, cb) {
     tmp.height = Math.round(fromCanvas.height * scale);
     tmp.getContext('2d', { willReadFrequently: true })
        .drawImage(fromCanvas, 0, 0, tmp.width, tmp.height);
-    tmp.toBlob(cb, 'image/jpeg', 0.6);
+    tmp.toBlob(cb, 'image/jpeg', 0.5);
   } else {
-    fromCanvas.toBlob(cb, 'image/jpeg', 0.6);
+    fromCanvas.toBlob(cb, 'image/jpeg', 0.5);
   }
 }
 
@@ -235,12 +230,12 @@ if (!window.__evtBound){
     ocrRunning = true;
 
     canvasToBlobResized(canvas, async (blob) => {
-      // 빠른 프리뷰
+      // 프리뷰
       try{
         const fd = new FormData();
         fd.append('image', blob, 'p.jpg');
         fd.append('qr_text', (ocrPreview["기기번호"] || ''));
-        const r = await fetchWithTimeout(`/preview-ocr`, { method:'POST', body: fd }, 30000);
+        const r = await fetchNoAbort(`/preview-ocr`, { method:'POST', body: fd });
         const body = await readBodySafe(r);
         if (!r.ok){ toast(`프리뷰 실패 ${r.status}\n${body ?? ''}`); }
         else{
@@ -256,7 +251,7 @@ if (!window.__evtBound){
         fd.append('image', blob, 'f.jpg');
         fd.append('qr_text', (ocrPreview["기기번호"] || ''));
         fd.append('no_write', 1);
-        const r = await fetchWithTimeout(`/process-ocr/`, { method:'POST', body: fd }, 45000);
+        const r = await fetchNoAbort(`/process-ocr/`, { method:'POST', body: fd });
         const body = await readBodySafe(r);
         if (!r.ok){ toast(`정식 OCR 실패 ${r.status}\n${body ?? ''}`); }
         else{
@@ -285,7 +280,7 @@ if (!window.__evtBound){
 
     // 서버 저장
     try{
-      const res = await fetchWithTimeout(`/save-result`,{
+      const res = await fetchNoAbort(`/save-result`,{
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify({
@@ -296,7 +291,7 @@ if (!window.__evtBound){
           "기기번호": ocrPreview["기기번호"],
           "기종":     ocrPreview["기종"],
         })
-      }, 45000);
+      });
       const body = await readBodySafe(res);
       if (res.ok){
         const j = (typeof body === 'string') ? {} : body;
@@ -316,6 +311,7 @@ if (!window.__evtBound){
 </script>
 </body>
 </html>
+
 
 
 
