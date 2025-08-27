@@ -18,14 +18,14 @@ from typing import Optional, Dict, Any
 
 from ocr_utils import make_final_entry, make_final_entry_fast
 
-APP_VERSION = os.getenv("APP_VERSION", "2025-08-27-02")
+APP_VERSION = os.getenv("APP_VERSION", "2025-08-27-05")
 
 # -------------------------------
 # FastAPI & Session
 # -------------------------------
 app = FastAPI()
 
-# 쿠키 30일, SameSite=Lax (앱 내 재방문/탭 재실행 시 세션 유지)
+# 쿠키 30일 유지, SameSite=Lax (같은 도메인 내에서 자동 전송)
 app.add_middleware(
     SessionMiddleware,
     secret_key=os.getenv("SESSION_SECRET", "change-me"),
@@ -35,9 +35,10 @@ app.add_middleware(
     session_cookie="session",
 )
 
+# 동일 오리진으로만 쓰지만, 혹시 모를 케이스 대비
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 프론트는 동일 오리진 상대경로 사용하므로 영향 거의 없음
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -98,7 +99,6 @@ async def callback(request: Request):
     if "access_token" not in result:
         return JSONResponse({"error": "Token acquire failed", "details": result}, status_code=400)
 
-    # 세션 저장
     claims = result.get("id_token_claims", {}) or {}
     request.session.clear()
     request.session["user"] = {
@@ -119,21 +119,15 @@ def me(request: Request):
         return RedirectResponse("/login")
     return JSONResponse({"status": "ok", "user": user})
 
-# -------------------------------
-# Debug
-# -------------------------------
-@app.get("/__debug/azure")
-def dbg_azure():
-    sec = os.getenv("CLIENT_SECRET") or ""
-    return {
-        "client_id": CLIENT_ID,
-        "tenant_id": TENANT_ID,
-        "authority": AUTHORITY,
-        "redirect_uri": REDIRECT_URI,
-        "scopes": SCOPES,
-        "secret_len": len(sec),
-        "secret_fp": hashlib.sha256(sec.encode()).hexdigest()[:12],
-    }
+@app.get("/whoami")
+def whoami(request: Request):
+    """세션/토큰 확인용 빠른 진단 엔드포인트"""
+    tokens = request.session.get("tokens") or {}
+    has_access = bool(tokens.get("access_token"))
+    return JSONResponse({
+        "has_user": bool(request.session.get("user")),
+        "has_access_token": has_access
+    }, status_code=200 if has_access else 401)
 
 # -------------------------------
 # Static files
@@ -172,15 +166,10 @@ async def callback_login2(request: Request):
 # Graph Helper
 # -------------------------------
 def _get_access_token(request: Optional[Request] = None):
-    # 세션의 access_token 사용 (프론트가 쿠키 전송)
     if request is not None:
         tok = (request.session.get("tokens") or {}).get("access_token")
         if tok: return tok
-    try:
-        with open("access_token.txt", "r", encoding="utf-8") as f:
-            return f.read().strip() or None
-    except:
-        return None
+    return None
 
 # -------------------------------
 # Excel Append
@@ -258,9 +247,8 @@ async def process_ocr(
         ]
         ok, info = write_row_to_onedrive(row, request)
         if not ok:
-            # 세션 토큰 없으면 401로 명확히 반환 → 프론트가 /login 유도
             if info.get("error") == "no_access_token":
-                return JSONResponse({"status": "write_failed", "write_error": info}, status_code=401)
+                return JSONResponse({"status": "write_failed", "write_error": info, "data": result}, status_code=401)
             return {"status": "ocr_ok_but_write_failed", "data": result, "write_error": info}
         return {"status": "success", "data": result, "write_info": info}
     finally:
@@ -311,6 +299,7 @@ def version(): return {"version": APP_VERSION}
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
 
 
 
