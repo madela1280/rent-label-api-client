@@ -14,7 +14,7 @@
     button{padding:12px 16px;border-radius:12px;border:0;background:#111827;color:#fff;font-weight:700}
     video,canvas{width:100%;border:1px solid #e5e7eb;border-radius:10px;background:#000}
     #preview,#snapshot{width:100%;aspect-ratio:16/7;object-fit:cover}
-    .muted{opacity:.6}
+    .muted{opacity:.7}
   </style>
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 </head>
@@ -42,8 +42,8 @@
   </div>
 
 <script>
-const APP_VER  = "2025-08-27-12";          // 캐시 버전
-const API_BASE = "";                        // ★ 같은 오리진(상대경로)로 고정
+const APP_VER  = "2025-08-27-14";  // 캐시버전
+const API_BASE = "";               // 같은 오리진
 
 /* SW 강제 최신화 */
 if ('serviceWorker' in navigator) {
@@ -55,26 +55,32 @@ if ('serviceWorker' in navigator) {
         if (e.target.state === 'installed') reg.waiting?.postMessage({ type: 'SKIP_WAITING' });
       });
       navigator.serviceWorker.addEventListener('controllerchange', () => { location.reload(); });
-    } catch (e) {}
+    } catch {}
   }).catch(()=>{});
 }
 
-/* 공통 fetch (쿠키 포함) */
-async function fetchWithTimeout(url, {timeoutMs=15000, ...options}={}){
+/* 공통 fetch (쿠키 포함 + 넉넉한 타임아웃 + 재시도) */
+async function fetchWithTimeout(url, {timeoutMs=30000, retry=0, ...options}={}){
   const ctrl = new AbortController();
   const t = setTimeout(()=>ctrl.abort(), timeoutMs);
   try {
-    return await fetch(url, {
+    const res = await fetch(url, {
       signal: ctrl.signal,
-      credentials: 'include',      // ★ 쿠키 포함
+      credentials: 'include',
       cache: 'no-store',
       ...options
     });
-  } finally { clearTimeout(t); }
+    return res;
+  } catch (e){
+    if (retry > 0) {
+      return fetchWithTimeout(url, {timeoutMs, retry: retry-1, ...options});
+    }
+    throw e;
+  } finally {
+    clearTimeout(t);
+  }
 }
-function warmBackend(){
-  fetchWithTimeout(`${API_BASE}/__ping`, {timeoutMs:4000}).catch(()=>{});
-}
+function warmBackend(){ fetchWithTimeout(`${API_BASE}/__ping`, {timeoutMs:5000}).catch(()=>{}); }
 warmBackend();
 
 /* 요소 */
@@ -91,7 +97,6 @@ const r_deviceId = document.getElementById('r_deviceId');
 const hint       = document.getElementById('hint');
 
 let badgeText = '';
-let badgePos  = { x: 16, y: 12 };
 let ocrPreview = null;
 let ocrRunning = false;
 let __stream = null;
@@ -107,7 +112,7 @@ async function stopCamera(){
       __stream.getTracks().forEach(t=>t.stop());
       __stream = null;
     }
-  } catch(_) {}
+  } catch{}
 }
 async function initCamera(){
   await stopCamera();
@@ -124,13 +129,13 @@ async function initCamera(){
   await video.play().catch(()=>{});
 }
 
-/* 페이지 라이프사이클 */
+/* 라이프사이클 */
 window.addEventListener('pageshow', (e) => { if (e.persisted || !video.srcObject) initCamera(); });
 window.addEventListener('pagehide', () => { stopCamera(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) stopCamera(); else initCamera(); });
 window.addEventListener('beforeunload', () => { stopCamera(); });
 
-/* 도우미 */
+/* 유틸 */
 function clamp(v, min, max){ return Math.max(min, Math.min(max, v)); }
 function parseModelDevice(raw) {
   const original = (raw || '').toString().trim();
@@ -164,7 +169,6 @@ function populatePanel(d){
   r_model.textContent    = d.model    || d['기종']     || '-';
   r_deviceId.textContent = d.deviceId || d['기기번호'] || '-';
 }
-
 function scanQRFromCanvas() {
   try {
     const img = ctx.getImageData(0,0,canvas.width,canvas.height);
@@ -173,7 +177,7 @@ function scanQRFromCanvas() {
   } catch { return { text:'', loc:null }; }
 }
 function canvasToBlobResized(fromCanvas, cb) {
-  const maxW = 900;
+  const maxW = 1100;
   const scale = Math.min(1, maxW / fromCanvas.width);
   if (scale < 1) {
     const tmp = document.createElement('canvas');
@@ -181,9 +185,9 @@ function canvasToBlobResized(fromCanvas, cb) {
     tmp.height = Math.round(fromCanvas.height * scale);
     tmp.getContext('2d', { willReadFrequently: true })
        .drawImage(fromCanvas, 0, 0, tmp.width, tmp.height);
-    tmp.toBlob(cb, 'image/jpeg', 0.55);
+    tmp.toBlob(cb, 'image/jpeg', 0.6);
   } else {
-    fromCanvas.toBlob(cb, 'image/jpeg', 0.55);
+    fromCanvas.toBlob(cb, 'image/jpeg', 0.6);
   }
 }
 
@@ -219,7 +223,7 @@ document.getElementById('captureBtn').addEventListener('click', () => {
   }
 
   populatePanel(base);
-  hint.textContent = "프리뷰 인식 중...";
+  hint.textContent = "프리뷰 인식 중... (최대 20초)";
 
   if (ocrRunning) return;
   ocrRunning = true;
@@ -233,13 +237,13 @@ document.getElementById('captureBtn').addEventListener('click', () => {
     fdFull.append('qr_text', (qr||''));
     fdFull.append('no_write', 1);
 
+    // 프리뷰 (20초, 실패 시 1회 재시도)
     try {
-      // 프리뷰 먼저(6초 제한)
       const rPrev = await fetchWithTimeout(`${API_BASE}/preview-ocr`, {
-        method:'POST', body: fdPrev, timeoutMs: 6000
+        method:'POST', body: fdPrev, timeoutMs: 20000, retry: 1
       });
       if (rPrev.ok) {
-        const j = await rPrev.json();
+        const j = await rPrev.json().catch(()=>null);
         if (j && j.data) {
           ocrPreview = {
             shipDate: j.data['출고일'] || base.shipDate,
@@ -250,20 +254,23 @@ document.getElementById('captureBtn').addEventListener('click', () => {
             model:    j.data['기종']     || base.model,
           };
           populatePanel(ocrPreview);
-          hint.textContent = "정식 OCR 보강 중...";
+          hint.textContent = "정식 OCR 보강 중... (최대 35초)";
+        } else {
+          hint.textContent = "프리뷰 응답 형식 오류";
         }
       } else {
-        hint.textContent = "프리뷰 실패";
+        const txt = await rPrev.text().catch(()=>rPrev.statusText);
+        hint.textContent = `프리뷰 실패: ${rPrev.status} ${txt}`;
       }
-    } catch(e){ hint.textContent = "프리뷰 네트워크 오류"; }
+    } catch(e){ hint.textContent = `프리뷰 네트워크 오류: ${e.message||e}`; }
 
+    // 정식 (35초, 실패 시 1회 재시도)
     try {
-      // 정식(12초 제한, 저장 안 함 no_write=1)
       const rFull = await fetchWithTimeout(`${API_BASE}/process-ocr/`, {
-        method:'POST', body: fdFull, timeoutMs: 12000
+        method:'POST', body: fdFull, timeoutMs: 35000, retry: 1
       });
       if (rFull.ok) {
-        const j = await rFull.json();
+        const j = await rFull.json().catch(()=>null);
         const d = (j && j.data) || null;
         if (d) {
           ocrPreview = {
@@ -277,12 +284,14 @@ document.getElementById('captureBtn').addEventListener('click', () => {
           populatePanel(ocrPreview);
           hint.textContent = "";
         } else {
-          hint.textContent = "정식 OCR 결과 없음";
+          const txt = await rFull.text().catch(()=>rFull.statusText);
+          hint.textContent = `정식 OCR 결과 없음/파싱 실패: ${txt}`;
         }
       } else {
-        hint.textContent = "정식 OCR 실패";
+        const txt = await rFull.text().catch(()=>rFull.statusText);
+        hint.textContent = `정식 OCR 실패: ${rFull.status} ${txt}`;
       }
-    } catch(e){ hint.textContent = "정식 OCR 네트워크 오류"; }
+    } catch(e){ hint.textContent = `정식 OCR 네트워크 오류: ${e.message||e}`; }
     finally { ocrRunning = false; }
   });
 });
@@ -314,18 +323,23 @@ document.getElementById('confirmBtn').addEventListener('click', async () => {
         "기기번호":  ocrPreview.deviceId || "",
         "기종":      ocrPreview.model    || "",
       }),
-      timeoutMs: 15000
+      timeoutMs: 30000,
+      retry: 1
     });
-    const api = await res.json().catch(()=>({}));
+    let txt = ''; 
+    try { txt = await res.clone().text(); } catch {}
+    let api = {};
+    try { api = JSON.parse(txt); } catch {}
+
     if (res.status === 401 && api?.step === 'onedrive' && (api?.write_error?.error === 'no_access_token')) {
       alert('엑셀 저장을 위해 로그인이 필요합니다. 한 번만 진행하면 30일 유지됩니다.');
-      location.href = `${API_BASE}/login`;            // ★ 같은 오리진으로 로그인
+      location.href = `${API_BASE}/login`;
       return;
     }
     if (res.ok && api.status === 'success'){
       alert('엑셀 저장 완료');
     } else {
-      alert('저장 실패: ' + JSON.stringify(api));
+      alert('저장 실패: ' + (txt || res.statusText));
     }
   } catch(e){
     alert('서버 전송 실패: ' + e.message);
@@ -334,6 +348,7 @@ document.getElementById('confirmBtn').addEventListener('click', async () => {
 </script>
 </body>
 </html>
+
 
 
 
