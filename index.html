@@ -31,7 +31,7 @@
       <div style="font-weight:800;margin-bottom:8px;">인식 결과 (확인 후 저장)</div>
       <div style="line-height:1.9">
         출고일: <span id="r_shipDate">-</span><br/>
-        대여자명: <span id="r_name">-</span> / 전화: <span id="r_phone">-</span><br/>
+        대여자명: <span id="r_name">-</span> / 전화번호: <span id="r_phone">-</span><br/>
         주소: <span id="r_addr">-</span><br/>
         기종: <span id="r_model">-</span> / 기기번호: <span id="r_deviceId">-</span>
       </div>
@@ -40,8 +40,8 @@
   </div>
 
 <script>
-const APP_VER  = "2025-08-27-02"; // 캐시 버전
-const API_BASE = "";              // ✅ 상대경로 사용(동일 오리진) → 쿠키 자동 전송 + CORS 이슈 최소화
+const APP_VER  = "2025-08-27-03"; // 캐시 버전
+const API_BASE = "";              // 동일 오리진 상대경로 사용
 
 /* Service Worker: 네트워크 우선 */
 if ('serviceWorker' in navigator) {
@@ -57,10 +57,11 @@ if ('serviceWorker' in navigator) {
   }).catch(()=>{});
 }
 
+/* fetch with timeout (+ 쿠키 포함) */
 async function fetchWithTimeout(url, options={}, timeoutMs=8000){
   const ctrl = new AbortController();
   const t = setTimeout(()=>ctrl.abort(), timeoutMs);
-  try { return await fetch(url, {signal:ctrl.signal, credentials:'include', ...options}); } // ✅ 쿠키 포함
+  try { return await fetch(url, {signal:ctrl.signal, credentials:'include', ...options}); }
   finally { clearTimeout(t); }
 }
 function warmBackend(){ fetchWithTimeout(`${API_BASE}/__ping`, {}, 3000).catch(()=>{}); }
@@ -79,12 +80,41 @@ const r_model    = document.getElementById('r_model');
 const r_deviceId = document.getElementById('r_deviceId');
 
 let badgeText = '';
-let badgePos  = { x: 16, y: 12 };
+let badgePos  = { x: 16, y: 16 };
 let ocrPreview = null;
 let ocrRunning = false;
 let __stream = null;
 
-/* 카메라 제어 */
+/* QR → 기종/기기번호 맵핑 (프런트에서도 즉시 표시) */
+function parseModelDevice(raw) {
+  const original = (raw || '').toString().trim();
+  const u = original.toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const MAP = { SM:'심포니', LT:'락티나', S:'스윙', M:'스윙맥스', F:'프리스타일', G:'각시밀', C:'시밀레' };
+  const m2 = u.match(/^(SM|LT)(\d{2,})$/);
+  if (m2) return { model: MAP[m2[1]] || '-', deviceId: m2[2], raw: original };
+  const m1 = u.match(/^([SMFLGC])[A-Z0-9]*$/);
+  if (m1)  return { model: MAP[m1[1]] || '-', deviceId: original, raw: original };
+  return { model: '-', deviceId: original || '-', raw: original };
+}
+
+/* 배지 그리기 (기종/기기번호) */
+function drawBadge(text, x=16, y=16){
+  if (!text) return;
+  const padX = 14, padY = 10;
+  ctx.font = 'bold 26px system-ui,-apple-system,Segoe UI,Roboto';
+  const w = ctx.measureText(text).width + padX * 2;
+  const h = 44;
+  x = Math.max(8, Math.min(x, canvas.width  - w - 8));
+  y = Math.max(8, Math.min(y, canvas.height - h - 8));
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(text, x + padX, y + 30);
+  badgePos = { x, y };
+  badgeText = text;
+}
+
+/* 카메라 */
 async function stopCamera(){
   try {
     if (video.srcObject) {
@@ -112,15 +142,15 @@ async function initCamera(){
   await video.play().catch(()=>{});
 }
 
-/* 표시 */
+/* 패널 채우기 — 모든 키 '출고일/대여자명/전화번호/주소/기기번호/기종'으로만 사용 */
 function populatePanel(d){
   document.getElementById('ocrPanel').style.display = 'block';
-  r_shipDate.textContent = d['출고일']   || d.shipDate || '-';
-  r_name.textContent     = d['대여자명'] || d.name     || '-';
-  r_phone.textContent    = d['전화번호'] || d.phone    || '-';
-  r_addr.textContent     = d['주소']     || d.addr     || '-';
-  r_model.textContent    = d['기종']     || d.model    || '-';
-  r_deviceId.textContent = d['기기번호'] || d.deviceId || '-';
+  r_shipDate.textContent = d['출고일']   || '-';
+  r_name.textContent     = d['대여자명'] || '-';
+  r_phone.textContent    = d['전화번호'] || '-';
+  r_addr.textContent     = d['주소']     || '-';
+  r_model.textContent    = d['기종']     || '-';
+  r_deviceId.textContent = d['기기번호'] || '-';
 }
 
 function scanQRFromCanvas() {
@@ -138,7 +168,8 @@ function canvasToBlobResized(fromCanvas, cb) {
     const tmp = document.createElement('canvas');
     tmp.width = Math.round(fromCanvas.width * scale);
     tmp.height = Math.round(fromCanvas.height * scale);
-    tmp.getContext('2d', { willReadFrequently: true }).drawImage(fromCanvas, 0, 0, tmp.width, tmp.height);
+    tmp.getContext('2d', { willReadFrequently: true })
+       .drawImage(fromCanvas, 0, 0, tmp.width, tmp.height);
     tmp.toBlob(cb, 'image/jpeg', 0.55);
   } else {
     fromCanvas.toBlob(cb, 'image/jpeg', 0.55);
@@ -160,16 +191,28 @@ if (!window.__evtBound){
     ctx.drawImage(video, 0, 0, w, h);
     canvas.style.display = 'block';
 
+    // 기본 바인딩
     const base = {
       "출고일": new Date().toISOString().slice(0,10),
       "대여자명":"-", "전화번호":"-", "주소":"-",
       "기기번호":"-", "기종":"-"
     };
 
-    const { text:qr } = scanQRFromCanvas();
+    // QR → 즉시 배지/패널 반영
+    const { text:qr, loc } = scanQRFromCanvas();
     if (qr) {
-      // 서버에서 기종/기기번호 최종 확정, 프런트는 표시만
-      base["기기번호"] = qr; // 임시 표시
+      const md = parseModelDevice(qr);
+      base["기종"] = md.model;
+      base["기기번호"] = md.deviceId;
+      // 배지 위치: QR 위치 근처로(없으면 좌상단)
+      let bx = 16, by = 16;
+      if (loc && loc.topLeftCorner) {
+        bx = Math.max(16, loc.topLeftCorner.x - 8);
+        by = Math.max(16, loc.topLeftCorner.y - 56);
+      }
+      drawBadge(`${base["기종"]} / ${base["기기번호"]}`, bx, by);
+    } else {
+      badgeText = ''; badgePos = { x:16, y:16 };
     }
 
     ocrPreview = base;
@@ -180,31 +223,46 @@ if (!window.__evtBound){
     canvasToBlobResized(canvas, async (blob) => {
       const fd1 = new FormData();
       fd1.append('image', blob, 'p.jpg');
-      fd1.append('qr_text', qr || '');
+      fd1.append('qr_text', (ocrPreview["기기번호"] || '')); // 서버도 참고
       const fd2 = new FormData();
       fd2.append('image', blob, 'f.jpg');
-      fd2.append('qr_text', qr || '');
+      fd2.append('qr_text', (ocrPreview["기기번호"] || ''));
       fd2.append('no_write', 1);
 
       const previewReq = (async () => {
         try {
           const r = await fetchWithTimeout(`${API_BASE}/preview-ocr`, { method:'POST', body: fd1 }, 10000);
-        if (!r.ok) return null; const j = await r.json(); return j.data || null;
+          if (!r.ok) return null; const j = await r.json(); return j.data || null;
         } catch { return null; }
       })();
       const finalReq = (async () => {
         try {
           const r = await fetchWithTimeout(`${API_BASE}/process-ocr/`, { method:'POST', body: fd2 }, 15000);
-        if (!r.ok) return null; const j = await r.json(); return j.data || null;
+          if (!r.ok) return null; const j = await r.json(); return j.data || null;
         } catch { return null; }
       })();
 
       const first = await Promise.race([previewReq, finalReq]).catch(()=>null);
-      if (first) { ocrPreview = {...ocrPreview, ...first}; populatePanel(ocrPreview); }
+      if (first) {
+        // 서버 값이 우선 (동일 키만 교체)
+        ocrPreview = {...ocrPreview, ...first};
+        populatePanel(ocrPreview);
+        // 배지도 최신 기종/기기번호로 갱신
+        if (ocrPreview["기종"] || ocrPreview["기기번호"]) {
+          drawBadge(`${ocrPreview["기종"] || '-'} / ${ocrPreview["기기번호"] || '-'}`, badgePos.x, badgePos.y);
+        }
+      }
 
       const results = await Promise.allSettled([previewReq, finalReq]);
-      for (const r of results){ if (r.status==='fulfilled' && r.value){ ocrPreview = {...ocrPreview, ...r.value}; } }
+      for (const r of results){
+        if (r.status==='fulfilled' && r.value){
+          ocrPreview = {...ocrPreview, ...r.value};
+        }
+      }
       populatePanel(ocrPreview);
+      if (ocrPreview["기종"] || ocrPreview["기기번호"]) {
+        drawBadge(`${ocrPreview["기종"] || '-'} / ${ocrPreview["기기번호"] || '-'}`, badgePos.x, badgePos.y);
+      }
       ocrRunning = false;
     });
   });
@@ -212,18 +270,18 @@ if (!window.__evtBound){
   document.getElementById('confirmBtn').addEventListener('click', async () => {
     if (!ocrPreview) return alert('인식 결과가 없습니다. 먼저 촬영하세요.');
     const btn = document.getElementById('confirmBtn'); btn.disabled = true;
+
     try{
       const res = await fetchWithTimeout(`${API_BASE}/save-result`,{
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify({
-          shipDate: ocrPreview["출고일"],
-          name:     ocrPreview["대여자명"],
-          phone:    ocrPreview["전화번호"],
-          addr:     ocrPreview["주소"],
-          deviceId: ocrPreview["기기번호"],
-          model:    ocrPreview["기종"],
-          ...ocrPreview
+          "출고일": ocrPreview["출고일"],
+          "대여자명": ocrPreview["대여자명"],
+          "전화번호": ocrPreview["전화번호"],
+          "주소": ocrPreview["주소"],
+          "기기번호": ocrPreview["기기번호"],
+          "기종": ocrPreview["기종"]
         })
       }, 12000);
       const api = await res.json();
@@ -243,6 +301,7 @@ if (!window.__evtBound){
 </script>
 </body>
 </html>
+
 
 
 
