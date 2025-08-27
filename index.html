@@ -44,7 +44,7 @@
   <div id="toast"></div>
 
 <script>
-const APP_VER  = "2025-08-27-09"; // 캐시버전
+const APP_VER  = "2025-08-27-10"; // 캐시버전
 
 /* SW */
 if ('serviceWorker' in navigator) {
@@ -70,9 +70,8 @@ async function readBodySafe(res){
   return null;
 }
 
-/* fetch (타임아웃 제거: AbortError 방지) */
+/* fetch (Abort 제거, 세션 유지) */
 async function fetchNoAbort(url, options={}){
-  // credentials 포함 (세션 쿠키 유지)
   return await fetch(url, { credentials:'include', ...options });
 }
 
@@ -93,6 +92,69 @@ let badgePos  = { x: 16, y: 16 };
 let ocrPreview = null;
 let ocrRunning = false;
 let __stream = null;
+
+/* === 검증기 === */
+const PHONE_010  = /^(010)[- ]?(\d{3,4})[- ]?(\d{4})$/;
+const PHONE_05XX = /^(05\d{2})[- ]?(\d{3,4})[- ]?(\d{4})$/;
+function validPhone(s){
+  if (!s || typeof s !== 'string') return '';
+  let t = s.replace(/[^\d\-]/g,'').replace(/--+/g,'-');
+  if (PHONE_010.test(t)) {
+    const m = t.match(PHONE_010);
+    return `010-${m[2]}-****`;
+  }
+  if (PHONE_05XX.test(t)) {
+    const m = t.match(PHONE_05XX);
+    return `${m[1]}-${m[2]}-${m[3]}`;
+  }
+  return '';
+}
+const NAME_BLACKLIST = ['아파트','동','호','호수','관리실','문의','배송','수령','받는분','수취인','이름','주소','고객','고객님'];
+function validName(s){
+  if (!s || typeof s !== 'string') return '';
+  const k = s.replace(/[^가-힣]/g,'');
+  if (k.length < 2 || k.length > 8) return '';
+  for (const w of NAME_BLACKLIST){ if (k.includes(w)) return ''; }
+  return k;
+}
+const ADDR_TOKENS = ['시','군','구','읍','면','동','리','로','길','번길','아파트','빌라','호','단지'];
+function validAddr(s){
+  if (!s || typeof s !== 'string') return '';
+  const cut = s.trim();
+  if (!ADDR_TOKENS.some(t=>cut.includes(t))) return '';
+  // 영문자/헛글자 비율이 높으면 버림
+  const hangul = (cut.match(/[가-힣]/g)||[]).length;
+  const latin  = (cut.match(/[A-Za-z]/g)||[]).length;
+  if (latin > hangul) return '';
+  return cut;
+}
+
+/* === 병합기(신뢰 우선) ===
+   - 기존 값이 더 신뢰되면 보존
+   - 기종/기기번호는 base(QR) 값을 항상 유지 (서버가 '-' 주더라도 무시) */
+function mergePrefer(older, newer){
+  const out = { ...older };
+  // 출고일: 신규가 유효하면 반영
+  if (newer['출고일']) out['출고일'] = newer['출고일'];
+
+  // 전화번호
+  const np = validPhone(newer['전화번호']);
+  if (!out['전화번호'] && np) out['전화번호'] = np;
+
+  // 대여자명: 한글 2~8자 & 블랙리스트 제외
+  const nn = validName(newer['대여자명']);
+  if (!out['대여자명'] && nn) out['대여자명'] = nn;
+
+  // 주소(1줄만): 토큰 포함 & 한글 우세
+  const na = validAddr(newer['주소']);
+  if (!out['주소'] && na) out['주소'] = na;
+
+  // 기종/기기번호: 기존이 더 신뢰됨(QR). 새 값이 비어있거나 '-' 면 무시
+  if (!out['기종'] && newer['기종'] && newer['기종'] !== '-') out['기종'] = newer['기종'];
+  if (!out['기기번호'] && newer['기기번호'] && newer['기기번호'] !== '-') out['기기번호'] = newer['기기번호'];
+
+  return out;
+}
 
 /* QR → 기종/기기번호 */
 function parseModelDevice(raw) {
@@ -171,9 +233,9 @@ function scanQRFromCanvas() {
   } catch { return { text:'', loc:null }; }
 }
 
-/* 압축(더 작게) */
+/* 압축(조금 더 작게) */
 function canvasToBlobResized(fromCanvas, cb) {
-  const maxW = 800; // 더 작게
+  const maxW = 800;
   const scale = Math.min(1, maxW / fromCanvas.width);
   if (scale < 1) {
     const tmp = document.createElement('canvas');
@@ -181,9 +243,9 @@ function canvasToBlobResized(fromCanvas, cb) {
     tmp.height = Math.round(fromCanvas.height * scale);
     tmp.getContext('2d', { willReadFrequently: true })
        .drawImage(fromCanvas, 0, 0, tmp.width, tmp.height);
-    tmp.toBlob(cb, 'image/jpeg', 0.5);
+    tmp.toBlob(cb, 'image/jpeg', 0.55);
   } else {
-    fromCanvas.toBlob(cb, 'image/jpeg', 0.5);
+    fromCanvas.toBlob(cb, 'image/jpeg', 0.55);
   }
 }
 
@@ -202,12 +264,12 @@ if (!window.__evtBound){
     ctx.drawImage(video, 0, 0, w, h);
     canvas.style.display = 'block';
 
+    // 1) 기본값 세팅 (QR 우선)
     const base = {
       "출고일": new Date().toISOString().slice(0,10),
       "대여자명":"-", "전화번호":"-", "주소":"-",
       "기기번호":"-", "기종":"-"
     };
-
     const { text:qr, loc } = scanQRFromCanvas();
     if (qr) {
       const md = parseModelDevice(qr);
@@ -222,14 +284,20 @@ if (!window.__evtBound){
     } else {
       badgeText = ''; badgePos = { x:16, y:16 };
     }
-
     ocrPreview = base;
     populatePanel(ocrPreview);
 
     if (ocrRunning) return;
     ocrRunning = true;
 
+    // 2) 서버 전송(프리뷰 → 정식) : 검증 후 병합
     canvasToBlobResized(canvas, async (blob) => {
+      const mergeFromServer = (j) => {
+        if (!j || !j.data) return;
+        ocrPreview = mergePrefer(ocrPreview, j.data);
+        populatePanel(ocrPreview);
+      };
+
       // 프리뷰
       try{
         const fd = new FormData();
@@ -238,11 +306,7 @@ if (!window.__evtBound){
         const r = await fetchNoAbort(`/preview-ocr`, { method:'POST', body: fd });
         const body = await readBodySafe(r);
         if (!r.ok){ toast(`프리뷰 실패 ${r.status}\n${body ?? ''}`); }
-        else{
-          const j = (typeof body === 'string') ? {} : body;
-          if (j && j.data){ ocrPreview = { ...ocrPreview, ...j.data }; populatePanel(ocrPreview); toast('프리뷰 수신'); }
-          else { toast(`프리뷰 응답 비어있음\n${body ?? ''}`); }
-        }
+        else mergeFromServer(typeof body==='string'?{}:body);
       }catch(e){ toast(`프리뷰 네트워크 오류\n${String(e)}`); }
 
       // 정식 OCR (기록 없음)
@@ -254,11 +318,7 @@ if (!window.__evtBound){
         const r = await fetchNoAbort(`/process-ocr/`, { method:'POST', body: fd });
         const body = await readBodySafe(r);
         if (!r.ok){ toast(`정식 OCR 실패 ${r.status}\n${body ?? ''}`); }
-        else{
-          const j = (typeof body === 'string') ? {} : body;
-          if (j && j.data){ ocrPreview = { ...ocrPreview, ...j.data }; populatePanel(ocrPreview); toast('정식 OCR 수신'); }
-          else { toast(`정식 OCR 응답 비어있음\n${body ?? ''}`); }
-        }
+        else mergeFromServer(typeof body==='string'?{}:body);
       }catch(e){ toast(`정식 OCR 네트워크 오류\n${String(e)}`); }
 
       ocrRunning = false;
@@ -311,6 +371,7 @@ if (!window.__evtBound){
 </script>
 </body>
 </html>
+
 
 
 
