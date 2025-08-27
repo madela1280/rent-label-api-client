@@ -35,7 +35,7 @@ CLIENT_ID     = os.getenv("CLIENT_ID")
 TENANT_ID     = os.getenv("TENANT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 
-SCOPES    = ["User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All", "offline_access", "openid", "profile"]
+SCOPES = ["User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All"]
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 GRAPH     = "https://graph.microsoft.com/v1.0"
 
@@ -271,6 +271,13 @@ def sw(): return FileResponse(os.path.join(BASE_DIR,"sw.js"))
 
 @app.get("/__version")
 def version(): return {"version":APP_VERSION}
+
+@app.get("/__reset_tokens")
+def __reset_tokens():
+    for p in ("access_token.txt","refresh_token.txt"):
+        try: os.remove(p)
+        except: pass
+    return {"status":"ok"}
 
 if __name__=="__main__":
     import uvicorn
