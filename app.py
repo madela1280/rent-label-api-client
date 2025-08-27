@@ -1,26 +1,21 @@
-import os
-import shutil
-import hashlib
-import uuid
-
+import os, shutil, hashlib, uuid, requests
 from dotenv import load_dotenv; load_dotenv()
+
 from fastapi import FastAPI, Request, UploadFile, Form, File, Body
-from fastapi.responses import RedirectResponse, JSONResponse, FileResponse, HTMLResponse, PlainTextResponse
+from fastapi.responses import RedirectResponse, JSONResponse, FileResponse, HTMLResponse
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 
-import requests
-_HTTP = requests.Session()
 import msal
 from uuid import uuid4
 from typing import Optional, Dict, Any
-
 from ocr_utils import make_final_entry, make_final_entry_fast
 
-APP_VERSION = os.getenv("APP_VERSION", "2025-08-27-01")
+_HTTP = requests.Session()
+APP_VERSION = os.getenv("APP_VERSION", "2025-08-27-restore")
 
 # -------------------------------
-# FastAPI
+# FastAPI & Session
 # -------------------------------
 app = FastAPI()
 app.add_middleware(
@@ -33,10 +28,8 @@ app.add_middleware(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"], allow_credentials=True,
+    allow_methods=["*"], allow_headers=["*"],
 )
 
 # -------------------------------
@@ -47,109 +40,88 @@ TENANT_ID = os.getenv("TENANT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 REDIRECT_URI = os.getenv("REDIRECT_URI", "https://rent-label-api-client-docker.onrender.com/callback")
 
-SCOPES = ["User.Read", "Files.ReadWrite.All"]
+SCOPES = ["User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All"]
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 GRAPH = "https://graph.microsoft.com/v1.0"
 
+FILE_NAME = os.getenv("FILE_NAME", "유축기출고.xlsx")
+SHEET_NAME = os.getenv("WORKSHEET_NAME", "유축기출고")
+
 # -------------------------------
-# MSAL
+# MSAL Helper
 # -------------------------------
 def _build_msal_app():
     return msal.ConfidentialClientApplication(
-        CLIENT_ID,
-        authority=AUTHORITY,
-        client_credential=CLIENT_SECRET,
+        CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET
     )
 
+def _save_tokens(result:dict):
+    with open("refresh_token.txt","w",encoding="utf-8") as f:
+        f.write(result.get("refresh_token",""))
+    with open("access_token.txt","w",encoding="utf-8") as f:
+        f.write(result.get("access_token",""))
+
+def _load_refresh_token()->Optional[str]:
+    if os.path.exists("refresh_token.txt"):
+        return open("refresh_token.txt","r",encoding="utf-8").read().strip()
+    return None
+
+def _load_access_token()->Optional[str]:
+    if os.path.exists("access_token.txt"):
+        return open("access_token.txt","r",encoding="utf-8").read().strip()
+    return None
+
+def _get_access_token()->Optional[str]:
+    tok = _load_access_token()
+    if tok: return tok
+    rtok = _load_refresh_token()
+    if not rtok: return None
+    result = _build_msal_app().acquire_token_by_refresh_token(rtok, scopes=SCOPES)
+    if "access_token" in result:
+        _save_tokens(result)
+        return result["access_token"]
+    return None
+
 # -------------------------------
-# 로그인
+# Routes: Login
 # -------------------------------
 @app.get("/login")
 def login(request: Request):
     request.session["state"] = str(uuid.uuid4())
     auth_url = _build_msal_app().get_authorization_request_url(
-        scopes=SCOPES,
-        state=request.session["state"],
-        redirect_uri=REDIRECT_URI,
-        prompt="select_account",
-        response_mode="query",
+        scopes=SCOPES, state=request.session["state"],
+        redirect_uri=REDIRECT_URI, prompt="select_account", response_mode="query",
     )
     return RedirectResponse(auth_url)
 
 @app.get("/callback")
 async def callback(request: Request):
     if request.query_params.get("state") != request.session.get("state"):
-        return JSONResponse({"error": "state mismatch"}, status_code=400)
+        return JSONResponse({"error":"state mismatch"}, status_code=400)
     code = request.query_params.get("code")
     if not code:
-        return JSONResponse({"error": "Authorization code missing"}, status_code=400)
+        return JSONResponse({"error":"Authorization code missing"}, status_code=400)
 
     result = _build_msal_app().acquire_token_by_authorization_code(
-        code, scopes=SCOPES, redirect_uri=REDIRECT_URI,
+        code, scopes=SCOPES, redirect_uri=REDIRECT_URI
     )
     if "access_token" not in result:
-        return JSONResponse({"error": "Token acquire failed", "details": result}, status_code=400)
+        return JSONResponse({"error":"Token acquire failed","details":result}, status_code=400)
 
-    with open("access_token.txt", "w", encoding="utf-8") as f:
-        f.write(result.get("access_token", ""))
-    with open("refresh_token.txt", "w", encoding="utf-8") as f:
-        f.write(result.get("refresh_token", ""))
-
-    request.session.clear()
-    request.session["tokens"] = {
-        "access_token": result.get("access_token", ""),
-        "refresh_token": result.get("refresh_token", ""),
-    }
+    _save_tokens(result)
+    request.session["tokens"] = {"access_token": result["access_token"]}
     return RedirectResponse("/")
 
 # -------------------------------
-# 토큰 헬퍼
+# Graph Helper
 # -------------------------------
-def _get_access_token(request: Optional[Request] = None):
-    tok = None
-    if request is not None:
-        tok = (request.session.get("tokens") or {}).get("access_token")
-    if tok: return tok
-    try:
-        with open("access_token.txt", "r", encoding="utf-8") as f:
-            return f.read().strip() or None
-    except: return None
-
-# -------------------------------
-# Static
-# -------------------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-@app.get("/", response_class=HTMLResponse)
-def root():
-    with open(os.path.join(BASE_DIR, "index.html"), "r", encoding="utf-8") as f:
-        return HTMLResponse(f.read(), media_type="text/html; charset=utf-8")
-
-@app.get("/manifest.webmanifest", response_class=FileResponse)
-def manifest():
-    return FileResponse(os.path.join(BASE_DIR, "manifest.webmanifest"))
-
-@app.get("/sw.js", response_class=FileResponse)
-def sw():
-    return FileResponse(os.path.join(BASE_DIR, "sw.js"))
-
-@app.get("/__ping")
-def ping(): return {"ping": str(uuid4())}
-
-# -------------------------------
-# OneDrive Excel
-# -------------------------------
-FILE_NAME = os.getenv("FILE_NAME", "유축기출고.xlsx")
-SHEET_NAME = os.getenv("WORKSHEET_NAME", "유축기출고")
-
 _DRIVE_ITEM_ID_CACHE = {"name": None, "id": None}
 def _get_drive_item_id(headers, file_name):
     if _DRIVE_ITEM_ID_CACHE["name"] == file_name and _DRIVE_ITEM_ID_CACHE["id"]:
         return _DRIVE_ITEM_ID_CACHE["id"]
     search = _HTTP.get(f"{GRAPH}/me/drive/root/search(q='{file_name}')?$top=1", headers=headers).json()
     items = search.get("value", [])
-    if not items or items[0]["name"] != file_name:
-        return None
+    if not items or items[0]["name"] != file_name: return None
     _DRIVE_ITEM_ID_CACHE["name"] = file_name
     _DRIVE_ITEM_ID_CACHE["id"] = items[0]["id"]
     return items[0]["id"]
@@ -157,32 +129,30 @@ def _get_drive_item_id(headers, file_name):
 def write_row_to_onedrive(row):
     token = _get_access_token()
     if not token: return False, {"error":"no_access_token"}
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {token}", "Content-Type":"application/json"}
     item_id = _get_drive_item_id(headers, FILE_NAME)
-    if not item_id: return False, {"error":"file_not_found"}
-
+    if not item_id: return False, {"error":"file_not_found","file":FILE_NAME}
     used = _HTTP.get(f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/usedRange", headers=headers).json()
-    address = used.get("address") or f"{SHEET_NAME}!A1:A1"
-    try: last_row = int(address.split("!")[1].split(":")[1][1:])
+    addr = used.get("address") or f"{SHEET_NAME}!A1:A1"
+    try: last_row = int(addr.split("!")[1].split(":")[1][1:])
     except: last_row = 1
-    next_row = last_row + 1
+    next_row = last_row+1
     target = f"A{next_row}:F{next_row}"
-
     resp = _HTTP.patch(
         f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/range(address='{target}')",
         headers=headers, json={"values":[row]}
     )
-    if resp.status_code != 200:
+    if resp.status_code!=200:
         return False, {"error":"write_failed","status":resp.status_code,"text":resp.text}
     return True, {"range":target}
 
 # -------------------------------
-# OCR API
+# OCR Endpoints
 # -------------------------------
 @app.post("/process-ocr/")
 async def process_ocr(qr_text: str = Form(""), image: UploadFile = File(...)):
     temp_path = f"temp_{image.filename}"
-    with open(temp_path, "wb") as f: shutil.copyfileobj(image.file, f)
+    with open(temp_path,"wb") as f: shutil.copyfileobj(image.file,f)
     try:
         result = make_final_entry(qr_text, temp_path)
         row = [
@@ -194,7 +164,8 @@ async def process_ocr(qr_text: str = Form(""), image: UploadFile = File(...)):
             result.get("기종",""),
         ]
         ok, info = write_row_to_onedrive(row)
-        if not ok: return {"status": "ocr_ok_but_write_failed", "data": result, "write_error": info}
+        if not ok:
+            return {"status":"ocr_ok_but_write_failed","data":result,"write_error":info}
         return {"status":"success","data":result,"write_info":info}
     finally:
         if os.path.exists(temp_path): os.remove(temp_path)
@@ -202,9 +173,10 @@ async def process_ocr(qr_text: str = Form(""), image: UploadFile = File(...)):
 @app.post("/preview-ocr")
 async def preview_ocr(qr_text: str = Form(""), image: UploadFile = File(...)):
     temp_path = f"temp_{image.filename}"
-    with open(temp_path, "wb") as f: shutil.copyfileobj(image.file, f)
+    with open(temp_path,"wb") as f: shutil.copyfileobj(image.file,f)
     try:
-        return {"status":"preview","data":make_final_entry_fast(qr_text,temp_path)}
+        result = make_final_entry_fast(qr_text,temp_path)
+        return {"status":"preview","data":result}
     finally:
         if os.path.exists(temp_path): os.remove(temp_path)
 
@@ -219,16 +191,35 @@ def save_result(data: Dict[str, Any] = Body(...)):
         data.get("기종",""),
     ]
     ok, info = write_row_to_onedrive(row)
-    if not ok: return JSONResponse({"status":"write_failed","write_error":info}, status_code=500)
+    if not ok: return JSONResponse({"status":"write_failed","write_error":info,"row":row}, status_code=500)
     return {"status":"success","write_info":info}
 
 # -------------------------------
-@app.get("/__version")
-def version(): return {"version": APP_VERSION}
+# Static / Misc
+# -------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-if __name__ == "__main__":
+@app.get("/", response_class=HTMLResponse)
+def root():
+    with open(os.path.join(BASE_DIR,"index.html"),"r",encoding="utf-8") as f:
+        return HTMLResponse(f.read(), media_type="text/html; charset=utf-8")
+
+@app.get("/__ping") 
+def ping(): return {"ping": str(uuid4())}
+
+@app.get("/manifest.webmanifest", response_class=FileResponse)
+def manifest(): return FileResponse(os.path.join(BASE_DIR,"manifest.webmanifest"))
+
+@app.get("/sw.js", response_class=FileResponse)
+def sw(): return FileResponse(os.path.join(BASE_DIR,"sw.js"))
+
+@app.get("/__version")
+def version(): return {"version":APP_VERSION}
+
+if __name__=="__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT",10000)))
+
 
 
 
