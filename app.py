@@ -18,24 +18,22 @@ from typing import Optional, Dict, Any
 
 from ocr_utils import make_final_entry, make_final_entry_fast
 
-APP_VERSION = os.getenv("APP_VERSION", "2025-08-27-05")
+APP_VERSION = os.getenv("APP_VERSION", "2025-08-27-08")
 
 # -------------------------------
 # FastAPI & Session
 # -------------------------------
 app = FastAPI()
 
-# 쿠키 30일 유지, SameSite=Lax (같은 도메인 내에서 자동 전송)
 app.add_middleware(
     SessionMiddleware,
     secret_key=os.getenv("SESSION_SECRET", "change-me"),
     same_site="lax",
     https_only=True,
-    max_age=60*60*24*30,
+    max_age=60*60*24*30,  # 30일
     session_cookie="session",
 )
 
-# 동일 오리진으로만 쓰지만, 혹시 모를 케이스 대비
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -121,7 +119,6 @@ def me(request: Request):
 
 @app.get("/whoami")
 def whoami(request: Request):
-    """세션/토큰 확인용 빠른 진단 엔드포인트"""
     tokens = request.session.get("tokens") or {}
     has_access = bool(tokens.get("access_token"))
     return JSONResponse({
@@ -218,7 +215,7 @@ def write_row_to_onedrive(row, request: Optional[Request] = None):
     return True, {"range":target}
 
 # -------------------------------
-# OCR + Excel
+# OCR + Excel (강력 예외 처리)
 # -------------------------------
 @app.post("/process-ocr/")
 async def process_ocr(
@@ -229,10 +226,17 @@ async def process_ocr(
     no_write: int = Form(0)
 ):
     temp_path = f"temp_{image.filename}"
-    with open(temp_path, "wb") as f:
-        shutil.copyfileobj(image.file, f)
     try:
-        result = make_final_entry_fast(qr_text, temp_path) if dry else make_final_entry(qr_text, temp_path)
+        with open(temp_path, "wb") as f:
+            shutil.copyfileobj(image.file, f)
+    except Exception as e:
+        return JSONResponse({"status":"error","step":"save_upload","error":str(e)}, status_code=500)
+
+    try:
+        try:
+            result = make_final_entry_fast(qr_text, temp_path) if dry else make_final_entry(qr_text, temp_path)
+        except Exception as e:
+            return JSONResponse({"status":"error","step":"ocr","error":str(e)}, status_code=500)
 
         if no_write:
             return {"status": "review", "data": result}
@@ -247,25 +251,39 @@ async def process_ocr(
         ]
         ok, info = write_row_to_onedrive(row, request)
         if not ok:
-            if info.get("error") == "no_access_token":
-                return JSONResponse({"status": "write_failed", "write_error": info, "data": result}, status_code=401)
-            return {"status": "ocr_ok_but_write_failed", "data": result, "write_error": info}
+            code = 401 if info.get("error")=="no_access_token" else 500
+            return JSONResponse({"status":"error","step":"onedrive","detail":info,"data":result}, status_code=code)
+
         return {"status": "success", "data": result, "write_info": info}
     finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except:
+            pass
 
 @app.post("/preview-ocr")
 async def preview_ocr(qr_text: str = Form(""), image: UploadFile = File(...)):
     temp_path = f"temp_{image.filename}"
-    with open(temp_path, "wb") as f: shutil.copyfileobj(image.file, f)
     try:
-        return {"status":"preview","data":make_final_entry_fast(qr_text,temp_path)}
+        with open(temp_path, "wb") as f: shutil.copyfileobj(image.file, f)
+    except Exception as e:
+        return JSONResponse({"status":"error","step":"save_upload","error":str(e)}, status_code=500)
+
+    try:
+        try:
+            data = make_final_entry_fast(qr_text, temp_path)
+        except Exception as e:
+            return JSONResponse({"status":"error","step":"ocr_preview","error":str(e)}, status_code=500)
+        return {"status":"preview","data":data}
     finally:
-        if os.path.exists(temp_path): os.remove(temp_path)
+        try:
+            if os.path.exists(temp_path): os.remove(temp_path)
+        except:
+            pass
 
 # -------------------------------
-# Save result
+# 수동 저장
 # -------------------------------
 @app.post("/save-result")
 def save_result(request: Request, data: Dict[str, Any] = Body(...)):
@@ -287,7 +305,7 @@ def save_result(request: Request, data: Dict[str, Any] = Body(...)):
     ok, info = write_row_to_onedrive(row, request)
     if not ok:
         status = 401 if info.get("error") == "no_access_token" else 500
-        return JSONResponse({"status": "write_failed", "write_error": info, "row": row}, status_code=status)
+        return JSONResponse({"status": "error", "step":"onedrive", "write_error": info, "row": row}, status_code=status)
     return {"status": "success", "write_info": info}
 
 # -------------------------------
@@ -299,6 +317,7 @@ def version(): return {"version": APP_VERSION}
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
 
 
 
