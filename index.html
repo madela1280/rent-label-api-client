@@ -14,6 +14,9 @@
     button{padding:12px 16px;border-radius:12px;border:0;background:#111827;color:#fff;font-weight:700}
     video,canvas{width:100%;border:1px solid #e5e7eb;border-radius:10px;background:#000}
     #preview,#snapshot{width:100%;aspect-ratio:16/7;object-fit:cover}
+    /* 토스트 */
+    #toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:#111827;color:#fff;
+           padding:10px 14px;border-radius:10px;max-width:92%;font-size:13px;line-height:1.4;display:none;z-index:9999;white-space:pre-wrap}
   </style>
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 </head>
@@ -39,16 +42,29 @@
     </div>
   </div>
 
-<script>
-const APP_VER  = "2025-08-27-06"; // 캐시버전
-const API_BASE = "";              // 동일 오리진 상대경로 (쿠키 자동포함)
+  <div id="toast"></div>
 
-/* Service Worker (네트워크 우선) */
+<script>
+const APP_VER  = "2025-08-27-07"; // 캐시버전
+const API_BASE = "";              // 동일 오리진(상대경로, 쿠키 자동)
+
+/* SW */
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js?ver=' + APP_VER).catch(()=>{});
 }
 
-/* fetch with timeout (쿠키 포함) */
+/* 토스트 */
+const toastEl = document.getElementById('toast');
+function toast(msg, ms=2500){
+  try{
+    toastEl.textContent = typeof msg === 'string' ? msg : JSON.stringify(msg);
+    toastEl.style.display = 'block';
+    clearTimeout(toastEl.__t);
+    toastEl.__t = setTimeout(()=>{ toastEl.style.display='none'; }, ms);
+  }catch{}
+}
+
+/* fetch with timeout + 쿠키 */
 async function fetchWithTimeout(url, options={}, timeoutMs=20000){
   const ctrl = new AbortController();
   const t = setTimeout(()=>ctrl.abort(), timeoutMs);
@@ -76,7 +92,7 @@ let ocrPreview = null;
 let ocrRunning = false;
 let __stream = null;
 
-/* QR → 기종/기기번호 맵핑 */
+/* QR → 기종/기기번호 */
 function parseModelDevice(raw) {
   const original = (raw || '').toString().trim();
   const u = original.toUpperCase().replace(/[^A-Z0-9]/g,'');
@@ -88,7 +104,7 @@ function parseModelDevice(raw) {
   return { model: '-', deviceId: original || '-', raw: original };
 }
 
-/* 배지 그리기 (기종/기기번호) */
+/* 배지 */
 function drawBadge(text, x=16, y=16){
   if (!text) return;
   const padX = 14;
@@ -105,7 +121,7 @@ function drawBadge(text, x=16, y=16){
   badgeText = text;
 }
 
-/* 카메라 제어 */
+/* 카메라 */
 async function stopCamera(){
   try {
     if (video.srcObject) {
@@ -133,7 +149,7 @@ async function initCamera(){
   await video.play().catch(()=>{});
 }
 
-/* 패널 — 한글 키만 사용 */
+/* 패널 — 한글 키 고정 */
 function populatePanel(d){
   document.getElementById('ocrPanel').style.display = 'block';
   r_shipDate.textContent = d['출고일']   || '-';
@@ -144,6 +160,7 @@ function populatePanel(d){
   r_deviceId.textContent = d['기기번호'] || '-';
 }
 
+/* QR스캔 */
 function scanQRFromCanvas() {
   try {
     const img = ctx.getImageData(0,0,canvas.width,canvas.height);
@@ -152,6 +169,7 @@ function scanQRFromCanvas() {
   } catch { return { text:'', loc:null }; }
 }
 
+/* 압축 */
 function canvasToBlobResized(fromCanvas, cb) {
   const maxW = 900;
   const scale = Math.min(1, maxW / fromCanvas.width);
@@ -170,11 +188,10 @@ function canvasToBlobResized(fromCanvas, cb) {
 /* 시작 */
 initCamera();
 
-/* 이벤트 중복 방지 */
+/* 이벤트 바인딩 */
 if (!window.__evtBound){
   window.__evtBound = true;
 
-  /* 촬영 */
   document.getElementById('captureBtn').addEventListener('click', () => {
     const w = video.videoWidth, h = video.videoHeight;
     if (!w || !h) return alert('카메라 초기화 대기 후 다시 시도');
@@ -183,7 +200,6 @@ if (!window.__evtBound){
     ctx.drawImage(video, 0, 0, w, h);
     canvas.style.display = 'block';
 
-    // 기본값
     const base = {
       "출고일": new Date().toISOString().slice(0,10),
       "대여자명":"-", "전화번호":"-", "주소":"-",
@@ -213,48 +229,56 @@ if (!window.__evtBound){
     ocrRunning = true;
 
     canvasToBlobResized(canvas, async (blob) => {
-      // 병렬: preview-ocr(빠름) + process-ocr(no_write=1)
+
+      // 1) 빠른 프리뷰
       const fd1 = new FormData();
       fd1.append('image', blob, 'p.jpg');
       fd1.append('qr_text', (ocrPreview["기기번호"] || ''));
+      let previewData = null;
+      try{
+        const r = await fetchWithTimeout(`/preview-ocr`, { method:'POST', body: fd1 }, 15000);
+        const j = await r.json().catch(()=>({}));
+        if (r.ok) {
+          previewData = j.data || null;
+          if (previewData){
+            ocrPreview = { ...ocrPreview, ...previewData };
+            populatePanel(ocrPreview);
+            drawBadge(`${ocrPreview["기종"] || '-'} / ${ocrPreview["기기번호"] || '-'}`, badgePos.x, badgePos.y);
+            toast('프리뷰 수신'); // 성공 표시
+          } else {
+            toast('프리뷰 응답 비어있음');
+          }
+        } else {
+          toast(`프리뷰 실패: ${r.status}`);
+        }
+      }catch(e){ toast(`프리뷰 오류: ${String(e)}`); }
+
+      // 2) 정식 OCR (기록 없음)
       const fd2 = new FormData();
       fd2.append('image', blob, 'f.jpg');
       fd2.append('qr_text', (ocrPreview["기기번호"] || ''));
       fd2.append('no_write', 1);
-
-      const previewReq = (async () => {
-        try {
-          const r = await fetchWithTimeout(`${API_BASE}/preview-ocr`, { method:'POST', body: fd1 }, 15000);
-          if (!r.ok) return null; const j = await r.json(); return j.data || null;
-        } catch { return null; }
-      })();
-      const finalReq = (async () => {
-        try {
-          const r = await fetchWithTimeout(`${API_BASE}/process-ocr/`, { method:'POST', body: fd2 }, 20000);
-          if (!r.ok) return null; const j = await r.json(); return j.data || null;
-        } catch { return null; }
-      })();
-
-      const first = await Promise.race([previewReq, finalReq]).catch(()=>null);
-      if (first) {
-        ocrPreview = { ...ocrPreview, ...first };
-        populatePanel(ocrPreview);
-        drawBadge(`${ocrPreview["기종"] || '-'} / ${ocrPreview["기기번호"] || '-'}`, badgePos.x, badgePos.y);
-      }
-
-      const results = await Promise.allSettled([previewReq, finalReq]);
-      for (const r of results){
-        if (r.status==='fulfilled' && r.value){
-          ocrPreview = { ...ocrPreview, ...r.value };
+      try{
+        const r = await fetchWithTimeout(`/process-ocr/`, { method:'POST', body: fd2 }, 22000);
+        const j = await r.json().catch(()=>({}));
+        if (r.ok) {
+          if (j && j.data){
+            ocrPreview = { ...ocrPreview, ...j.data };
+            populatePanel(ocrPreview);
+            drawBadge(`${ocrPreview["기종"] || '-'} / ${ocrPreview["기기번호"] || '-'}`, badgePos.x, badgePos.y);
+            toast('정식 OCR 수신');
+          } else {
+            toast('정식 OCR 응답 비어있음');
+          }
+        } else {
+          toast(`정식 OCR 실패: ${r.status}`);
         }
-      }
-      populatePanel(ocrPreview);
-      drawBadge(`${ocrPreview["기종"] || '-'} / ${ocrPreview["기기번호"] || '-'}`, badgePos.x, badgePos.y);
+      }catch(e){ toast(`정식 OCR 오류: ${String(e)}`); }
+
       ocrRunning = false;
     });
   });
 
-  /* 확인(엑셀 저장 + 사진 저장) */
   document.getElementById('confirmBtn').addEventListener('click', async () => {
     if (!ocrPreview) return alert('인식 결과가 없습니다. 먼저 촬영하세요.');
     const btn = document.getElementById('confirmBtn'); btn.disabled = true;
@@ -268,7 +292,6 @@ if (!window.__evtBound){
       setTimeout(()=>URL.revokeObjectURL(a.href), 10000);
     }catch{} }, 'image/jpeg', 0.7);
 
-    // 서버 저장 (세션 없으면 401 받아서 /login 이동)
     try{
       const res = await fetchWithTimeout(`${API_BASE}/save-result`,{
         method:'POST',
@@ -299,6 +322,7 @@ if (!window.__evtBound){
 </script>
 </body>
 </html>
+
 
 
 
