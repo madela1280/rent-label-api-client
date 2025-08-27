@@ -11,32 +11,33 @@ from starlette.middleware.sessions import SessionMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 
 import requests
-_HTTP = requests.Session()  # 세션 유지로 속도 개선
+_HTTP = requests.Session()
 import msal
 from uuid import uuid4
 from typing import Optional, Dict, Any
 
 from ocr_utils import make_final_entry, make_final_entry_fast
 
-APP_VERSION = os.getenv("APP_VERSION", "2025-08-27-01")
+APP_VERSION = os.getenv("APP_VERSION", "2025-08-27-02")
 
 # -------------------------------
 # FastAPI & Session
 # -------------------------------
 app = FastAPI()
 
+# 쿠키 30일, SameSite=Lax (앱 내 재방문/탭 재실행 시 세션 유지)
 app.add_middleware(
     SessionMiddleware,
     secret_key=os.getenv("SESSION_SECRET", "change-me"),
-    same_site="none",
+    same_site="lax",
     https_only=True,
-    max_age=3600,
+    max_age=60*60*24*30,
     session_cookie="session",
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # 프론트는 동일 오리진 상대경로 사용하므로 영향 거의 없음
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -77,7 +78,7 @@ def login(request: Request):
         scopes=SCOPES,
         state=request.session["state"],
         redirect_uri=REDIRECT_URI,
-        prompt="login",
+        prompt="select_account",
         response_mode="query",
     )
     sep = "&" if "?" in auth_url else "?"
@@ -97,18 +98,7 @@ async def callback(request: Request):
     if "access_token" not in result:
         return JSONResponse({"error": "Token acquire failed", "details": result}, status_code=400)
 
-    # 저장
-    try:
-        with open("refresh_token.txt", "w", encoding="utf-8") as f:
-            f.write(result.get("refresh_token", ""))
-    except:
-        pass
-    try:
-        with open("access_token.txt", "w", encoding="utf-8") as f:
-            f.write(result.get("access_token", ""))
-    except:
-        pass
-
+    # 세션 저장
     claims = result.get("id_token_claims", {}) or {}
     request.session.clear()
     request.session["user"] = {
@@ -182,6 +172,7 @@ async def callback_login2(request: Request):
 # Graph Helper
 # -------------------------------
 def _get_access_token(request: Optional[Request] = None):
+    # 세션의 access_token 사용 (프론트가 쿠키 전송)
     if request is not None:
         tok = (request.session.get("tokens") or {}).get("access_token")
         if tok: return tok
@@ -211,8 +202,8 @@ def _get_drive_item_id(headers, file_name):
     _DRIVE_ITEM_ID_CACHE["id"] = items[0]["id"]
     return _DRIVE_ITEM_ID_CACHE["id"]
 
-def write_row_to_onedrive(row):
-    token = _get_access_token()
+def write_row_to_onedrive(row, request: Optional[Request] = None):
+    token = _get_access_token(request)
     if not token: return False, {"error":"no_access_token"}
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
@@ -227,7 +218,7 @@ def write_row_to_onedrive(row):
     try: last_row = int(address.split("!")[1].split(":")[1][1:])
     except: last_row = 1
     next_row = last_row + 1
-    target = f"A{next_row}:F{next_row}"
+    target = f"A{next_row}:F{next_row}"  # 6개 컬럼
 
     resp = _HTTP.patch(
         f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/range(address='{target}')",
@@ -242,6 +233,7 @@ def write_row_to_onedrive(row):
 # -------------------------------
 @app.post("/process-ocr/")
 async def process_ocr(
+    request: Request,
     qr_text: str = Form(""),
     image: UploadFile = File(...),
     dry: int = Form(0),
@@ -264,8 +256,11 @@ async def process_ocr(
             result.get("기기번호", ""),
             result.get("기종", ""),
         ]
-        ok, info = write_row_to_onedrive(row)
+        ok, info = write_row_to_onedrive(row, request)
         if not ok:
+            # 세션 토큰 없으면 401로 명확히 반환 → 프론트가 /login 유도
+            if info.get("error") == "no_access_token":
+                return JSONResponse({"status": "write_failed", "write_error": info}, status_code=401)
             return {"status": "ocr_ok_but_write_failed", "data": result, "write_error": info}
         return {"status": "success", "data": result, "write_info": info}
     finally:
@@ -285,7 +280,7 @@ async def preview_ocr(qr_text: str = Form(""), image: UploadFile = File(...)):
 # Save result
 # -------------------------------
 @app.post("/save-result")
-def save_result(data: Dict[str, Any] = Body(...)):
+def save_result(request: Request, data: Dict[str, Any] = Body(...)):
     def g(*keys, default=""):
         for k in keys:
             v = data.get(k)
@@ -301,9 +296,10 @@ def save_result(data: Dict[str, Any] = Body(...)):
         g("기기번호", "deviceId"),
         g("기종", "model"),
     ]
-    ok, info = write_row_to_onedrive(row)
+    ok, info = write_row_to_onedrive(row, request)
     if not ok:
-        return JSONResponse({"status": "write_failed", "write_error": info, "row": row}, status_code=500)
+        status = 401 if info.get("error") == "no_access_token" else 500
+        return JSONResponse({"status": "write_failed", "write_error": info, "row": row}, status_code=status)
     return {"status": "success", "write_info": info}
 
 # -------------------------------

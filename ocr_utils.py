@@ -1,5 +1,5 @@
 # ocr_utils.py — 2025-08-27
-# 간소화 버전: 전화번호 / 대여자명 / 주소(첫줄)만 추출
+# 목적: 전화번호 / 전화번호 '앞' 대여자명 / 전화번호 '아래 한 줄' 주소(첫 줄)만 신속 추출
 import os, re
 from datetime import date
 from typing import List, Tuple
@@ -40,7 +40,7 @@ def _resize(img: Image.Image, max_w:int=1200) -> Image.Image:
         return img.resize((max_w, int(h*s)))
     return img
 
-# -------- 전화번호 / 대여자명 / 주소 --------
+# -------- 패턴 --------
 R_010  = re.compile(r"(010)[-\s\.]?(\d{3,4})[-\s\.]?(\d{4})")
 R_05XX = re.compile(r"(05\d{2})[-\s\.]?(\d{3,4})[-\s\.]?(\d{4})")
 LABEL_NAME = re.compile(r"^(받는.?|수령인|수취인|이름)\s*[:：]?\s*", re.I)
@@ -94,21 +94,46 @@ def _parse_fields(lines: List[str]) -> dict:
 
     return {"전화번호":phone, "대여자명":name, "주소":addr}
 
-# -------- QR → 기종/기기번호 --------
-def _map_model_device(qr_text:str)->Tuple[str,str]:
-    raw = (qr_text or "").strip()
-    u = re.sub(r"[^A-Z0-9]", "", raw.upper())
-    MAP = {"SM":"심포니","LT":"락티나","S":"스윙","M":"스윙맥스","F":"프리스타일","G":"각시밀","C":"시밀레"}
-    m2 = re.match(r"^(SM|LT)(\d{2,})$", u)
-    if m2: return MAP.get(m2.group(1), "-"), m2.group(2)
-    m1 = re.match(r"^([SMFLGC])[A-Z0-9]*$", u)
-    if m1: return MAP.get(m1.group(1), "-"), raw
-    return "-", ""
+# -------- ROI --------
+def _roi_cv2(path:str):
+    if not HAS_CV2: return None
+    try:
+        img = cv2.imread(path); h,w = img.shape[:2]
+        # 송장 하단 텍스트 띠 대략 잡기 (중앙~하단)
+        y1 = int(h*0.35); y2 = int(h*0.85); x1 = int(w*0.05); x2 = int(w*0.95)
+        roi = img[y1:y2, x1:x2]
+        if roi.size==0: return None
+        return Image.fromarray(cv2.cvtColor(roi, cv2.COLOR_BGR2RGB))
+    except Exception:
+        return None
+
+def _roi_ratio(path:str)->Image.Image:
+    im = Image.open(path); W, H = im.size
+    x1 = int(W * 0.05); x2 = int(W * 0.95)
+    y1 = int(H * 0.35); y2 = int(H * 0.85)
+    return im.crop((x1, y1, x2, y2))
+
+def _crop_roi(path:str)->Image.Image:
+    roi = _roi_cv2(path) if HAS_CV2 else None
+    return roi if roi is not None else _roi_ratio(path)
 
 # -------- 메인 --------
+def _try_ocr(path:str)->str:
+    # 1) ROI 약 → 강
+    roi = _resize(_crop_roi(path), 1200)
+    t = _ocr_text(_preprocess(roi, False), psm=6)
+    if len(re.sub(r"\s+","",t)) < 14:
+        t2 = _ocr_text(_preprocess(roi, True), psm=6)
+        if len(re.sub(r"\s+","",t2)) > len(re.sub(r"\s+","",t)): t = t2
+    # 2) 부족하면 전체 이미지 한 번 더(강)
+    if len(re.sub(r"\s+","",t)) < 14:
+        full = _resize(Image.open(path), 1400)
+        t3 = _ocr_text(_preprocess(full, True), psm=6)
+        if len(re.sub(r"\s+","",t3)) > len(re.sub(r"\s+","",t)): t = t3
+    return t
+
 def make_final_entry(qr_text:str, path:str):
-    img = _resize(Image.open(path), 1200)
-    txt = _ocr_text(_preprocess(img, False), psm=6)
+    txt = _try_ocr(path)
     lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
     parsed = _parse_fields(lines)
     model, device_id = _map_model_device(qr_text)
@@ -122,8 +147,9 @@ def make_final_entry(qr_text:str, path:str):
     }
 
 def make_final_entry_fast(qr_text:str, path:str):
-    img = _resize(Image.open(path), 900)
-    txt = _ocr_text(_preprocess(img, True), psm=6)
+    # ROI만 강처리로 초고속
+    roi = _resize(_crop_roi(path), 900)
+    txt = _ocr_text(_preprocess(roi, True), psm=6)
     lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
     parsed = _parse_fields(lines)
     model, device_id = _map_model_device(qr_text)
@@ -135,4 +161,16 @@ def make_final_entry_fast(qr_text:str, path:str):
         "기기번호": device_id,
         "기종": model,
     }
+
+# -------- QR → 기종/기기번호 --------
+def _map_model_device(qr_text:str)->Tuple[str,str]:
+    raw = (qr_text or "").strip()
+    u = re.sub(r"[^A-Z0-9]", "", raw.upper())
+    MAP = {"SM":"심포니","LT":"락티나","S":"스윙","M":"스윙맥스","F":"프리스타일","G":"각시밀","C":"시밀레"}
+    m2 = re.match(r"^(SM|LT)(\d{2,})$", u)
+    if m2: return MAP.get(m2.group(1), "-"), m2.group(2)
+    m1 = re.match(r"^([SMFLGC])[A-Z0-9]*$", u)
+    if m1: return MAP.get(m1.group(1), "-"), raw
+    return "-", ""
+
 
