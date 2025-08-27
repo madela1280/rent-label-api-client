@@ -279,9 +279,17 @@ def sw():
     return FileResponse(os.path.join(BASE_DIR, "sw.js"))
 
 # 콜백 경로 분기
-@app.get("/callback/")           async def callback_slash(request: Request):  return await callback(request)
-@app.get("/login/callback")     async def callback_login(request: Request):   return await callback(request)
-@app.get("/login/callback/")    async def callback_login2(request: Request):  return await callback(request)
+@app.get("/callback/")
+async def callback_slash(request: Request):
+    return await callback(request)
+
+@app.get("/login/callback")
+async def callback_login(request: Request):
+    return await callback(request)
+
+@app.get("/login/callback/")
+async def callback_login2(request: Request):
+    return await callback(request)
 
 # -------------------------------
 # OneDrive / Excel Helper
