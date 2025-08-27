@@ -43,7 +43,7 @@
   </div>
 
 <script>
-const APP_VER  = "2025-08-27-restore";
+const APP_VER  = "2025-08-27-restore-fast5";
 const API_BASE = ""; // 같은 오리진 사용(쿠키/토큰 유지 용이)
 
 /* SW 강제 최신화 */
@@ -214,7 +214,7 @@ document.getElementById('captureBtn').addEventListener('click', () => {
     "기종": md.model || "-"
   };
   populatePanel(ocrPreview);
-  hint.textContent = "프리뷰 인식 중... (최대 20초)";
+  hint.textContent = "프리뷰 인식 중... (최대 5초)";
 
   if (ocrRunning) return;
   ocrRunning = true;
@@ -224,13 +224,12 @@ document.getElementById('captureBtn').addEventListener('click', () => {
     fdPrev.append('image', blob, 'p.jpg');
     fdPrev.append('qr_text', qr || '');
 
-    // 프리뷰 우선(20s, 1회 재시도)
+    // 프리뷰: 5초로 단축
     try {
-      const rPrev = await fetchWithTimeout(`${API_BASE}/preview-ocr`, { method:'POST', body: fdPrev, timeoutMs:20000, retry:1 });
+      const rPrev = await fetchWithTimeout(`${API_BASE}/preview-ocr`, { method:'POST', body: fdPrev, timeoutMs:5000, retry:0 });
       if (rPrev.ok) {
         const j = await rPrev.json().catch(()=>null);
         if (j && j.data) {
-          // 필드 병합(비어있지 않은 값 우선)
           const d = j.data;
           ocrPreview = {
             "출고일":  d['출고일']   || ocrPreview['출고일'],
@@ -253,7 +252,7 @@ document.getElementById('captureBtn').addEventListener('click', () => {
       hint.textContent = `프리뷰 네트워크 오류: ${e.message||e}`;
     }
 
-    // 정식(35s, 1회 재시도)
+    // 정식(35s, 1회 재시도) — 기존 유지
     const fdFull = new FormData();
     fdFull.append('image', blob, 'f.jpg');
     fdFull.append('qr_text', qr || '');
@@ -289,13 +288,13 @@ document.getElementById('captureBtn').addEventListener('click', () => {
   });
 });
 
-/* 확인(엑셀 저장 + 사진저장) */
+/* 확인(엑셀 저장 + 사진저장) — 즉시 응답 + 5초 폴링 */
 document.getElementById('confirmBtn').addEventListener('click', async () => {
   if (!ocrPreview) return alert('인식 결과가 없습니다. 먼저 촬영하세요.');
   const btn = document.getElementById('confirmBtn');
   btn.disabled = true;
 
-  // 사진 로컬 저장
+  // 사진 로컬 저장(기존 유지)
   const ts = new Date().toISOString().replace(/[:.TZ]/g,'').slice(0,14);
   canvas.toBlob((b)=>{ 
     const a = document.createElement('a');
@@ -305,26 +304,57 @@ document.getElementById('confirmBtn').addEventListener('click', async () => {
   }, 'image/jpeg', 0.7);
 
   try{
+    // ❶ 저장 요청: 5초 타임아웃, 즉시 응답(queued or success)
     const res = await fetchWithTimeout(`${API_BASE}/save-result`,{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify(ocrPreview),
-      timeoutMs: 30000,
-      retry: 1
+      timeoutMs: 5000,
+      retry: 0
     });
-    let txt = ""; try { txt = await res.clone().text(); } catch {}
-    let api = {}; try { api = JSON.parse(txt); } catch {}
+
+    let api = {}; 
+    try { api = await res.clone().json(); } catch {}
 
     if (res.status === 401 || (api?.write_error && api.write_error.error === 'no_access_token')){
       alert('엑셀 저장을 위해 로그인이 필요합니다. 한 번만 진행하면 30일 유지됩니다.');
       location.href = `${API_BASE}/login`;
       return;
     }
+
+    // ❷ 즉시 성공 케이스
     if (res.ok && api.status === 'success'){
       alert('엑셀 저장 완료');
-    } else {
-      alert('저장 실패: ' + (txt || res.statusText));
+      return;
     }
+
+    // ❸ 큐에 들어간 케이스: 최대 5초만 폴링 후 종료
+    if (res.ok && api.status === 'queued' && api.job_id){
+      const jobId = api.job_id;
+      const deadline = Date.now() + 5000; // 최대 5초
+      let lastMsg = '업로드 처리 중...';
+
+      while (Date.now() < deadline) {
+        await new Promise(r=>setTimeout(r, 1000)); // 1초 간격
+        try {
+          const s = await fetchWithTimeout(`${API_BASE}/job-status?job_id=${encodeURIComponent(jobId)}`, { timeoutMs: 2000 });
+          if (!s.ok) break;
+          const j = await s.json().catch(()=>null);
+          if (!j) break;
+          if (j.status === 'success'){ alert('엑셀 저장 완료'); return; }
+          if (j.status === 'failed'){ alert('저장 실패: ' + (j.error?.text || '서버 오류')); return; }
+          lastMsg = j.status_text || lastMsg;
+        } catch { break; }
+      }
+      // 5초 초과: 사용자 대기는 종료 (백엔드는 계속 처리)
+      alert('업로드 지연: 서버에서 계속 처리 중입니다.');
+      return;
+    }
+
+    // ❹ 기타 실패
+    const txt = await res.text().catch(()=>res.statusText);
+    alert('저장 실패: ' + (txt || res.statusText));
+
   } catch(e){
     alert('서버 전송 실패: ' + e.message);
   } finally {
@@ -334,6 +364,7 @@ document.getElementById('confirmBtn').addEventListener('click', async () => {
 </script>
 </body>
 </html>
+
 
 
 
