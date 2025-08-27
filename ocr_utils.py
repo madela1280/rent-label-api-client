@@ -1,10 +1,13 @@
-# ocr_utils.py — 규칙 고정(주소=파란/녹색 박스 최댓글씨, 이름=주소 첫글자 아래, 전화=규칙4종, 010 마스킹, 금지번호 제외)
-# - OpenCV가 있으면 파란/녹색 박스를 HSV로 탐지해서 주소 ROI로 사용
-# - 없으면 전체 OCR에서 "가장 큰 폰트 라인(화면 중앙 가중)"을 주소로 사용
-# - 이름은 주소 첫 글자의 x범위를 기준으로, 바로 아래 얇은 수직 밴드에서 한글 2~4자 추출
-# - 전화는 이미지 전체에서 010/05xx 규칙만 허용, 010은 항상 010-1234-****로 저장, 05xx는 원문 유지
-# - 금지번호 010-7394-3535는 절대 저장하지 않음
-# - QR 텍스트에서 기종/기기번호 추출
+# ocr_utils.py — 노란 배경 블록 전용 추출 + 전화 규칙(4종, 첫번째만) + 010 마스킹 + 금지번호 제외
+# 규칙
+# - 입력 사진에서 "노란 배경" 블록만 색분리 → 그 영역 안에서만 추출
+# - 대여자명: (노란 블록) 전화가 있는 "같은 줄"의 왼쪽에서 한글 2~4자, 없으면 바로 윗줄의 왼쪽
+# - 전화번호: 패턴 4종 중 "첫번째로 등장"한 것만 사용
+#     · 05**-123-4567  / 05**-1234-5678  → 그대로 저장
+#     · 010-1234-5678  / 010-1234-****   → 항상 010-1234-**** 로 저장
+#     · 금지번호 010-7394-3535 는 절대 저장하지 않음
+# - 주소: (노란 블록) 전화 줄 "아래쪽"에서 처음 만나는 주소형 문장을 앞부분만 정규화(식별용)
+# - QR 텍스트에서 기종/기기번호 추출은 기존 규칙 유지
 
 import os, re
 from datetime import date
@@ -13,7 +16,7 @@ from typing import List, Tuple, Dict, Any, Optional
 from PIL import Image, ImageOps, ImageFilter
 import pytesseract
 
-# --- Optional OpenCV ---
+# -------- Optional OpenCV (노란 영역 분리에 사용) --------
 try:
     import cv2
     import numpy as np
@@ -21,15 +24,15 @@ try:
 except Exception:
     HAS_CV2 = False
 
-# --- Tesseract path ---
+# -------- Tesseract 경로 --------
 pytesseract.pytesseract.tesseract_cmd = os.getenv(
     "TESSERACT_CMD",
     pytesseract.pytesseract.tesseract_cmd
 )
 
-# ---------------- 공통 전처리 ----------------
+# -------- 전처리 --------
 def _resize(img: Image.Image, max_w:int) -> Image.Image:
-    w,h = img.size
+    w, h = img.size
     if w > max_w:
         s = max_w/float(w)
         return img.resize((max_w, int(h*s)))
@@ -48,14 +51,13 @@ def _preprocess(img: Image.Image, strong: bool=False) -> Image.Image:
 def _clean(s:str)->str:
     return re.sub(r"[|\[\]{}<>]+"," ", s or "").strip()
 
-# ---------------- 정규식/규칙 ----------------
-# 전화 규칙 4종
-R_010_FULL   = re.compile(r"(010)[-\s\.]?(\d{4})[-\s\.]?(\d{4})")
-R_010_344    = re.compile(r"(010)[-\s\.]?(\d{3})[-\s\.]?(\d{4})")  # 보정용(드물게 3-4)
-R_05_3_4     = re.compile(r"(05\d{2})[-\s\.]?(\d{3})[-\s\.]?(\d{4})")
-R_05_4_4     = re.compile(r"(05\d{2})[-\s\.]?(\d{4})[-\s\.]?(\d{4})")
+# -------- 전화 규칙(4종) + 금지 --------
+R_010_FULL = re.compile(r"(010)[-\s\.]?(\d{4})[-\s\.]?(\d{4})")
+R_010_344  = re.compile(r"(010)[-\s\.]?(\d{3})[-\s\.]?(\d{4})")          # 예외(3-4) 대비
+R_05_3_4   = re.compile(r"(05\d{2})[-\s\.]?(\d{3})[-\s\.]?(\d{4})")
+R_05_4_4   = re.compile(r"(05\d{2})[-\s\.]?(\d{4})[-\s\.]?(\d{4})")
 
-BANNED_PHONES = {"010-7394-3535"}  # 금지번호 (절대 저장하지 않음)
+BANNED_PHONES = {"010-7394-3535"}  # ❗ 금지번호
 
 LABEL_NAME = re.compile(r"^(받는.?|수령인|수취인|이름)\s*[:：]?\s*", re.I)
 LABEL_ADDR = re.compile(r"^(주소|배달지|배송지)\s*[:：]?\s*", re.I)
@@ -63,27 +65,27 @@ LABEL_ADDR = re.compile(r"^(주소|배달지|배송지)\s*[:：]?\s*", re.I)
 def _mask_010(m: re.Match) -> str:
     # 010은 항상 010-1234-**** 로 저장
     mid = m.group(2)
-    if len(mid) == 3:  # 3-4 케이스는 가운데 0 padding 없이 사용
-        mid = f"{mid}"
     return f"010-{mid}-****"
 
 def _format_05(m: re.Match) -> str:
     return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
 
+def _is_banned_010(m: re.Match) -> bool:
+    raw = f"010-{m.group(2)}-{m.group(3)}"
+    return raw in BANNED_PHONES
+
+# -------- 주소 전처리 --------
 def _address_prefix(s: str) -> str:
-    # 주소는 "식별 가능한 앞부분"만
     s2 = LABEL_ADDR.sub("", s or "").strip()
     if not s2: return ""
-    # 괄호/쉼표 앞까지만
     s2 = re.split(r"[(),]", s2)[0].strip()
     s2 = re.sub(r"\s+", " ", s2).strip()
-    # 광역시 축약
     s2 = (s2.replace("서울특별시","서울").replace("부산광역시","부산").replace("대구광역시","대구")
               .replace("인천광역시","인천").replace("광주광역시","광주").replace("대전광역시","대전")
               .replace("울산광역시","울산").replace("세종특별자치시","세종"))
     return s2
 
-# ---------------- Tesseract data helpers ----------------
+# -------- Tesseract data helpers --------
 def _tess_data(img: Image.Image, psm:int=6) -> List[Dict[str, Any]]:
     try:
         d = pytesseract.image_to_data(img, config=f"--oem 3 --psm {psm}", lang="kor", output_type=pytesseract.Output.DICT)
@@ -116,186 +118,139 @@ def _group_lines(words: List[Dict[str, Any]]):
 def _line_text(words: List[Dict[str, Any]]) -> str:
     return _clean(" ".join(w["text"] for w in words))
 
-# ---------------- 박스(파란/녹색) 탐지 ----------------
-def _find_colored_band_bbox(pil_img: Image.Image) -> Optional[Tuple[int,int,int,int]]:
-    """파란 또는 녹색 큰 박스 영역 탐지 (있으면 우선 사용)."""
+# -------- 노란 배경 블록 탐지 --------
+def _find_yellow_block(pil_img: Image.Image) -> Optional[Tuple[int,int,int,int]]:
+    """
+    HSV에서 노랑(H≈15~40) + 충분한 채도/명도 범위로 마스크 → 가장 큰 컨투어 bbox 반환.
+    """
     if not HAS_CV2: return None
     bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
 
-    # 파랑
-    blue_mask1 = cv2.inRange(hsv, np.array([90, 40, 40], np.uint8), np.array([135, 255, 255], np.uint8))
-    # 녹색
-    green_mask = cv2.inRange(hsv, np.array([35, 40, 40], np.uint8),  np.array([85, 255, 255], np.uint8))
-    mask = cv2.bitwise_or(blue_mask1, green_mask)
+    # 노란색 범위(실내 조명 고려해 넓게 2구간)
+    lower1 = np.array([15,  60, 120], np.uint8)
+    upper1 = np.array([30, 255, 255], np.uint8)
+    lower2 = np.array([30,  60, 120], np.uint8)
+    upper2 = np.array([40, 255, 255], np.uint8)
 
-    if cv2.countNonZero(mask) < (pil_img.width * pil_img.height) * 0.005:
+    mask1 = cv2.inRange(hsv, lower1, upper1)
+    mask2 = cv2.inRange(hsv, lower2, upper2)
+    mask = cv2.bitwise_or(mask1, mask2)
+
+    if cv2.countNonZero(mask) < (pil_img.width * pil_img.height) * 0.003:
         return None
 
     kernel = np.ones((5,5), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not cnts: return None
-    # 가장 넓은 컨투어 선택
     cnt = max(cnts, key=lambda c: cv2.boundingRect(c)[2]*cv2.boundingRect(c)[3])
     x,y,w,h = cv2.boundingRect(cnt)
-    if w*h < (pil_img.width*pil_img.height)*0.02:
+    if w*h < (pil_img.width*pil_img.height)*0.01:
         return None
     return (x,y,w,h)
 
-# ---------------- 주소/이름 추출 ----------------
-def _extract_address_and_name(img: Image.Image) -> Tuple[str, str]:
+# -------- 노란 블록 내부 파싱 --------
+def _extract_from_yellow(yimg: Image.Image) -> Tuple[str, str, str]:
     """
-    1) 색상 박스가 있으면 그 내부의 "가장 큰 폰트 라인"을 주소로.
-       - 주소 라인의 "첫 글자 x~폭" 기준으로, 바로 아래 얇은 수직 밴드에서 이름(한글 2~4자)
-    2) 없으면 전체에서 "가장 큰 폰트 라인(중앙 가중)"을 주소로, 그 바로 아래 라인을 이름으로.
+    노란 블록 내부에서 (위→아래, 좌→우) 순서로:
+      1) 전화: 규칙 4종 중 '첫번째 등장' 채택 (010은 마스킹, 05xx는 그대로, 금지 제외)
+      2) 이름: 전화가 있는 '같은 줄' 왼쪽에서 한글 2~4자, 없으면 바로 윗줄 왼쪽
+      3) 주소: 전화 줄 '아래쪽'에서 처음 만나는 문장을 주소 앞부분으로 정규화
+    반환: (address, name, phone)
     """
-    # 1) 색 박스 우선
-    bbox = _find_colored_band_bbox(img)
-    if bbox:
-        x,y,w,h = bbox
-        addr_roi = img.crop((x, y, x+w, y+h))
-        # 박스 내부 라인들 중 폰트 높이(중앙 가중) 최댓값 라인 선택
-        words = _tess_data(_preprocess(addr_roi, False), psm=6)
-        lines = _group_lines(words)
-        if lines:
-            scored = []
-            W, H = addr_roi.size
-            for k, ws in lines.items():
-                # 라인별 median height + 중앙 가중
-                h_med = sorted([w["height"] for w in ws])[len(ws)//2]
-                cx = sum(w["left"]+w["width"]/2 for w in ws)/len(ws)
-                cy = sum(w["top"]+w["height"]/2 for w in ws)/len(ws)
-                center = 1.0 - (abs(cx - W/2)/(W/2))*0.3 - (abs(cy - H/2)/(H/2))*0.3
-                scored.append((h_med*center, k))
-            scored.sort(reverse=True)
-            addr_line = lines[scored[0][1]]
-            addr_text = _line_text(addr_line)
-            address = _address_prefix(addr_text)
-
-            # 주소 첫 글자의 x범위 추정
-            first_word = addr_line[0]
-            x1 = x + first_word["left"]
-            x2 = x + first_word["left"] + max(first_word["width"], 80)  # 최소 폭 80px
-
-            # 이름 ROI: 박스 바로 아래 y~y+h*1.2 구간의 수직 밴드
-            ny1 = y + h
-            ny2 = min(img.height, ny1 + int(h * 1.2))
-            name_roi = img.crop((max(0, x1-10), ny1, min(img.width, x2+10), ny2))
-            raw = pytesseract.image_to_string(_preprocess(name_roi, False), config="--oem 3 --psm 7", lang="kor")
-            raw = _clean(LABEL_NAME.sub("", raw))
-            toks = re.findall(r"[가-힣]{2,4}", raw)
-            name = toks[-1] if toks else ""
-            return address, name
-
-    # 2) 색 박스 실패 → 전체에서 "가장 큰 폰트 라인(중앙 가중)"
-    words = _tess_data(_preprocess(img, False), psm=6)
+    # 충분 해상도 + 가벼운 전처리
+    words = _tess_data(_preprocess(yimg, False), psm=6)
     lines = _group_lines(words)
     if not lines:
-        return "", ""
+        # 강처리 1회 보강
+        words = _tess_data(_preprocess(yimg, True), psm=6)
+        lines = _group_lines(words)
+        if not lines:
+            return "", "", ""
 
-    scored = []
-    W, H = img.size
-    for k, ws in lines.items():
-        h_med = sorted([w["height"] for w in ws])[len(ws)//2]
-        cx = sum(w["left"]+w["width"]/2 for w in ws)/len(ws)
-        cy = sum(w["top"]+w["height"]/2 for w in ws)/len(ws)
-        center = 1.0 - (abs(cx - W/2)/(W/2))*0.3 - (abs(cy - H/2)/(H/2))*0.3
-        scored.append((h_med*center, k))
-    scored.sort(reverse=True)
-    addr_line = lines[scored[0][1]]
-    address = _address_prefix(_line_text(addr_line))
+    # 라인 키 정렬(상→하)
+    keys = sorted(lines.keys(), key=lambda k: (k[0], k[1], k[2]))
 
-    # 이름: 주소 라인 바로 아래 가장 가까운 라인
-    y_addr = max(w["top"]+w["height"] for w in addr_line)
-    below = []
-    for k, ws in lines.items():
-        y_top = min(w["top"] for w in ws)
-        if y_top >= y_addr:
-            below.append((y_top, k))
-    below.sort()
-    name = ""
-    if below:
-        name_line = lines[below[0][1]]
-        raw = LABEL_NAME.sub("", _line_text(name_line))
-        toks = re.findall(r"[가-힣]{2,4}", raw)
-        name = toks[-1] if toks else ""
+    phone = ""
+    phone_line_idx = -1
 
-    return address, name
+    # (1) 전화: 첫번째로 등장한 패턴 1개만 채택
+    for i, k in enumerate(keys):
+        t = _line_text(lines[k])
 
-# ---------------- 전화 추출 ----------------
-def _extract_phone(img: Image.Image) -> str:
-    """
-    전화 규칙:
-      - 05**-123-4567 / 05**-1234-5678  → 그대로 저장
-      - 010-1234-**** / 010-1234-5678   → 저장 시 항상 010-1234-**** 로 변환
-      - 금지번호 010-7394-3535는 제외
-    우선순위: 010(비금지) > 05xx. 같은 우선순위면 중앙/신뢰도 점수로 선택.
-    """
-    # 두 단계(보통→강)로 단어 박스 생성
-    words = _tess_data(_preprocess(img, False), psm=6)
-    if not words:
-        words = _tess_data(_preprocess(img, True), psm=6)
-        if not words:
-            return ""
-
-    lines = _group_lines(words)
-    W, H = img.size
-    cands: List[Tuple[str, float, int]] = []  # (phone, score, priority)
-
-    for ws in lines.values():
-        t = _line_text(ws)
-
-        # 010: full
+        # 010 full
         for m in R_010_FULL.finditer(t):
-            raw_full = f"010-{m.group(2)}-{m.group(3)}"
-            if raw_full in BANNED_PHONES:  # 금지
+            if _is_banned_010(m):  # 금지
                 continue
-            ph = _mask_010(m)  # 저장은 항상 마스킹
-            cx = sum(w["left"]+w["width"]/2 for w in ws)/len(ws)
-            cy = sum(w["top"]+w["height"]/2 for w in ws)/len(ws)
-            center = 1.0 - (abs(cx-W/2)/(W/2))*0.4 - (abs(cy-H/2)/(H/2))*0.4
-            conf = sum(max(0.0, w["conf"]) for w in ws)/max(1,len(ws))
-            cands.append((ph, center + conf/100.0, 2))
+            phone = _mask_010(m)
+            phone_line_idx = i
+            break
+        if phone: break
 
-        # 010: 3-4 보정
+        # 010 3-4
         for m in R_010_344.finditer(t):
-            raw_full = f"010-{m.group(2)}-{m.group(3)}"
-            if raw_full in BANNED_PHONES:
+            if _is_banned_010(m):  # 금지
                 continue
-            ph = _mask_010(m)
-            cx = sum(w["left"]+w["width"]/2 for w in ws)/len(ws)
-            cy = sum(w["top"]+w["height"]/2 for w in ws)/len(ws)
-            center = 1.0 - (abs(cx-W/2)/(W/2))*0.4 - (abs(cy-H/2)/(H/2))*0.4
-            conf = sum(max(0.0, w["conf"]) for w in ws)/max(1,len(ws))
-            cands.append((ph, center + conf/100.0, 2))
+            phone = _mask_010(m)
+            phone_line_idx = i
+            break
+        if phone: break
 
-        # 05xx: 3-4
+        # 05xx 3-4
         for m in R_05_3_4.finditer(t):
-            ph = _format_05(m)
-            cx = sum(w["left"]+w["width"]/2 for w in ws)/len(ws)
-            cy = sum(w["top"]+w["height"]/2 for w in ws)/len(ws)
-            center = 1.0 - (abs(cx-W/2)/(W/2))*0.4 - (abs(cy-H/2)/(H/2))*0.4
-            conf = sum(max(0.0, w["conf"]) for w in ws)/max(1,len(ws))
-            cands.append((ph, center + conf/100.0, 1))
+            phone = _format_05(m)
+            phone_line_idx = i
+            break
+        if phone: break
 
-        # 05xx: 4-4
+        # 05xx 4-4
         for m in R_05_4_4.finditer(t):
-            ph = _format_05(m)
-            cx = sum(w["left"]+w["width"]/2 for w in ws)/len(ws)
-            cy = sum(w["top"]+w["height"]/2 for w in ws)/len(ws)
-            center = 1.0 - (abs(cx-W/2)/(W/2))*0.4 - (abs(cy-H/2)/(H/2))*0.4
-            conf = sum(max(0.0, w["conf"]) for w in ws)/max(1,len(ws))
-            cands.append((ph, center + conf/100.0, 1))
+            phone = _format_05(m)
+            phone_line_idx = i
+            break
+        if phone: break
 
-    if not cands:
-        return ""
+    # (2) 이름: 전화가 있는 줄의 '왼쪽', 없으면 바로 윗줄
+    name = ""
+    if phone and phone_line_idx >= 0:
+        t = _line_text(lines[keys[phone_line_idx]])
+        # 전화 match 위치를 다시 찾아서 그 앞부분만 사용
+        left_text = t
+        m = None
+        for pat in (R_010_FULL, R_010_344, R_05_3_4, R_05_4_4):
+            m = pat.search(t)
+            if m: break
+        if m:
+            left_text = t[:m.start()]
+        left_text = LABEL_NAME.sub("", left_text).strip()
+        toks = re.findall(r"[가-힣]{2,4}", left_text)
+        name = toks[-1] if toks else ""
+        if not name and phone_line_idx > 0:
+            prev_text = LABEL_NAME.sub("", _line_text(lines[keys[phone_line_idx-1]])).strip()
+            toks2 = re.findall(r"[가-힣]{2,4}", prev_text)
+            name = toks2[-1] if toks2 else ""
+    else:
+        # 전화가 없더라도 첫 두 줄 중 왼쪽에서 이름 추정(보수적으로)
+        if keys:
+            t0 = LABEL_NAME.sub("", _line_text(lines[keys[0]])).strip()
+            toks0 = re.findall(r"[가-힣]{2,4}", t0)
+            if toks0:
+                name = toks0[-1]
 
-    # 우선순위(010>05xx) → 점수 순
-    cands.sort(key=lambda x: (x[2], x[1]), reverse=True)
-    return cands[0][0]
+    # (3) 주소: 전화 줄 아래에서 '처음 만나는 문장'을 앞부분만 반환
+    address = ""
+    start_idx = phone_line_idx + 1 if phone_line_idx >= 0 else 0
+    for j in range(start_idx, len(keys)):
+        cand = _line_text(lines[keys[j]])
+        cand2 = _address_prefix(cand)
+        if cand2:
+            address = cand2
+            break
 
-# ---------------- QR 파싱 ----------------
+    return address, name, phone
+
+# -------- QR → 기종/기기번호 --------
 def _map_model_device(qr_text:str)->Tuple[str,str]:
     raw = (qr_text or "").strip()
     u = re.sub(r"[^A-Z0-9]", "", raw.upper())
@@ -308,7 +263,7 @@ def _map_model_device(qr_text:str)->Tuple[str,str]:
         return MAP.get(m1.group(1), "-"), raw
     return "-", ""
 
-# ---------------- 최종 포맷 ----------------
+# -------- 최종 포맷 --------
 def _final(qr_text:str, address:str, name:str, phone:str)->Dict[str,str]:
     model, device_id = _map_model_device(qr_text)
     return {
@@ -320,30 +275,37 @@ def _final(qr_text:str, address:str, name:str, phone:str)->Dict[str,str]:
         "기종": model,
     }
 
-# ---------------- 공개 엔트리 ----------------
+# -------- 공개 엔트리 (프리뷰/정식) --------
 def make_final_entry_fast(qr_text:str, img_path:str)->Dict[str,str]:
     im = Image.open(img_path)
-    im = _resize(im, 2000)  # 정확도 위해 충분 해상도
-    address, name = _extract_address_and_name(im)
-    phone = _extract_phone(im)
+    im = _resize(im, 2000)
+
+    # 노란 블록 찾기
+    bbox = _find_yellow_block(im)
+    yimg = im.crop((bbox[0], bbox[1], bbox[0]+bbox[2], bbox[1]+bbox[3])) if bbox else im
+
+    address, name, phone = _extract_from_yellow(yimg)
     return _final(qr_text, address, name, phone)
 
 def make_final_entry(qr_text:str, img_path:str)->Dict[str,str]:
     im = Image.open(img_path)
     im = _resize(im, 2400)
 
-    address, name = _extract_address_and_name(im)
-    phone = _extract_phone(im)
+    bbox = _find_yellow_block(im)
+    yimg = im.crop((bbox[0], bbox[1], bbox[0]+bbox[2], bbox[1]+bbox[3])) if bbox else im
 
-    # 보강: 하나라도 비면 강처리 이미지로 재시도
+    address, name, phone = _extract_from_yellow(yimg)
+
+    # 보강: 비어있으면 강처리로 한 번 더 시도
     if not (address and name and phone):
-        im2 = _preprocess(im, True)
-        address2, name2 = _extract_address_and_name(im2)
-        phone2 = _extract_phone(im2)
+        yimg2 = _preprocess(yimg, True)
+        # image_to_data는 PIL.Image 필요 → 강처리 이미지는 이미 PIL
+        address2, name2, phone2 = _extract_from_yellow(yimg2)
         address = address or address2
         name    = name or name2
         phone   = phone or phone2
 
     return _final(qr_text, address, name, phone)
+
 
 
