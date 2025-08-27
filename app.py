@@ -18,7 +18,7 @@ from typing import Optional, Dict, Any
 
 from ocr_utils import make_final_entry, make_final_entry_fast
 
-APP_VERSION = os.getenv("APP_VERSION", "2025-08-27-09")
+APP_VERSION = os.getenv("APP_VERSION", "2025-08-27-11")
 
 # -------------------------------
 # FastAPI & Session
@@ -28,12 +28,13 @@ app = FastAPI()
 app.add_middleware(
     SessionMiddleware,
     secret_key=os.getenv("SESSION_SECRET", "change-me"),
-    same_site="lax",
+    same_site="lax",          # 모바일 브라우저에서 세션 유지
     https_only=True,
-    max_age=60*60*24*30,  # 30일
+    max_age=60*60*24*30,      # 30일 세션
     session_cookie="session",
 )
 
+# 동일 오리진 사용이므로 CORS 영향 없음(남겨둠)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -48,16 +49,12 @@ app.add_middleware(
 CLIENT_ID = os.getenv("CLIENT_ID", "")
 TENANT_ID = os.getenv("TENANT_ID", "")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-REDIRECT_URI = os.getenv("REDIRECT_URI", "https://rent-label-api-client-docker.onrender.com/callback")
 
 SCOPES = ["User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All"]
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 GRAPH = "https://graph.microsoft.com/v1.0"
 
-# -------------------------------
-# MSAL App
-# -------------------------------
-def _build_msal_app():
+def _msal() -> msal.ConfidentialClientApplication:
     if not CLIENT_SECRET:
         raise RuntimeError("CLIENT_SECRET env is missing.")
     return msal.ConfidentialClientApplication(
@@ -66,6 +63,10 @@ def _build_msal_app():
         client_credential=CLIENT_SECRET,
     )
 
+def _redirect_uri(request: Request) -> str:
+    """현재 접속한 도메인 기준 콜백 URL 생성 (도메인 불일치 문제 해소)"""
+    return str(request.url_for("callback"))
+
 # -------------------------------
 # 로그인 & 콜백
 # -------------------------------
@@ -73,10 +74,10 @@ def _build_msal_app():
 def login(request: Request):
     request.session["state"] = str(uuid.uuid4())
     nonce = str(uuid.uuid4())
-    auth_url = _build_msal_app().get_authorization_request_url(
+    auth_url = _msal().get_authorization_request_url(
         scopes=SCOPES,
         state=request.session["state"],
-        redirect_uri=REDIRECT_URI,
+        redirect_uri=_redirect_uri(request),
         prompt="select_account",
         response_mode="query",
     )
@@ -91,8 +92,8 @@ async def callback(request: Request):
     if not code:
         return JSONResponse({"error": "Authorization code missing"}, status_code=400)
 
-    result = _build_msal_app().acquire_token_by_authorization_code(
-        code, scopes=SCOPES, redirect_uri=REDIRECT_URI,
+    result = _msal().acquire_token_by_authorization_code(
+        code, scopes=SCOPES, redirect_uri=_redirect_uri(request),
     )
     if "access_token" not in result:
         return JSONResponse({"error": "Token acquire failed", "details": result}, status_code=400)
@@ -108,14 +109,15 @@ async def callback(request: Request):
         "access_token": result.get("access_token", ""),
         "refresh_token": result.get("refresh_token", ""),
     }
-    # 바로 홈으로 (무한루프/체감 혼란 방지)
+    # 로그인 후 바로 홈으로
     return RedirectResponse("/")
 
+# 세션 확인용(필요하면 호출)
 @app.get("/me")
 def me(request: Request):
     user = request.session.get("user")
     if not user:
-        return RedirectResponse("/login")
+        return JSONResponse({"status":"no_session"}, status_code=401)
     return JSONResponse({"status": "ok", "user": user})
 
 # -------------------------------
@@ -139,6 +141,7 @@ def manifest():
 def sw():
     return FileResponse(os.path.join(BASE_DIR, "sw.js"))
 
+# 콜백 경로 호환
 @app.get("/callback/")
 async def callback_slash(request: Request):
     return await callback(request)
@@ -196,7 +199,7 @@ def write_row_to_onedrive(row, request: Optional[Request] = None):
     try: last_row = int(address.split("!")[1].split(":")[1][1:])
     except: last_row = 1
     next_row = last_row + 1
-    target = f"A{next_row}:F{next_row}"  # 6개 컬럼
+    target = f"A{next_row}:F{next_row}"  # 출고일,대여자명,전화번호,주소,기기번호,기종
 
     resp = _HTTP.patch(
         f"{GRAPH}/me/drive/items/{item_id}/workbook/worksheets('{SHEET_NAME}')/range(address='{target}')",
@@ -207,7 +210,7 @@ def write_row_to_onedrive(row, request: Optional[Request] = None):
     return True, {"range":target}
 
 # -------------------------------
-# OCR + Excel (강력 예외 처리)
+# OCR + Excel
 # -------------------------------
 @app.post("/process-ocr/")
 async def process_ocr(
@@ -309,6 +312,7 @@ def version(): return {"version": APP_VERSION}
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
 
 
 
