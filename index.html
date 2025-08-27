@@ -1,86 +1,323 @@
-<!doctype html><html lang="ko"><head>
-<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<title>유축기 출고 스캔 (PWA)</title>
-<link rel="manifest" href="manifest.webmanifest"/><meta name="theme-color" content="#111827"/>
-<style>:root{color-scheme:light dark}body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Apple SD Gothic Neo,Noto Sans KR;margin:0;padding:16px;background:#fff;color:#111827}header{font-weight:800;font-size:22px;margin:4px 0 12px}.card{border:1px solid #e5e7eb;border-radius:12px;padding:16px}button{padding:12px 16px;border-radius:12px;border:0;background:#111827;color:#fff;font-weight:700}video,canvas{width:100%;border:1px solid #e5e7eb;border-radius:10px;background:#000}#preview,#snapshot{width:100%;aspect-ratio:16/7;object-fit:cover}.muted{opacity:.7}</style>
-<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script></head><body>
-<header>유축기 출고 스캔</header>
-<div class="card">
-  <video id="preview" autoplay playsinline muted></video><br/><br/>
-  <button id="captureBtn">사진 촬영</button>
-  <canvas id="snapshot" style="display:none;margin-top:12px;"></canvas>
-  <div id="ocrPanel" style="display:none;margin-top:16px;">
-    <div style="font-weight:800;margin-bottom:8px;">인식 결과 (확인 후 저장)</div>
-    <div style="line-height:1.9">
-      출고일: <span id="r_shipDate">-</span><br/>
-      대여자명: <span id="r_name">-</span><br/>
-      전화번호: <span id="r_phone">-</span><br/>
-      주소: <span id="r_addr">-</span><br/>
-      기종: <span id="r_model">-</span> / 기기번호: <span id="r_deviceId">-</span>
-    </div>
-    <button id="confirmBtn" style="margin-top:12px;">확인 (엑셀 저장)</button>
-    <div id="hint" class="muted" style="margin-top:8px;font-size:12px;"></div>
-  </div>
-</div>
-<script>
-const APP_VER="2025-08-27-fast-queue";const API_BASE="";
-if('serviceWorker'in navigator){navigator.serviceWorker.register('./sw.js?ver='+APP_VER).then(async r=>{try{await r.update();if(r.waiting)r.waiting.postMessage({type:'SKIP_WAITING'});if(r.installing)r.installing.addEventListener('statechange',e=>{if(e.target.state==='installed')r.waiting?.postMessage({type:'SKIP_WAITING'})});navigator.serviceWorker.addEventListener('controllerchange',()=>location.reload())}catch{}}).catch(()=>{})}
-async function fetchWithTimeout(u,{timeoutMs=30000,retry=0,...o}={}){const c=new AbortController();const t=setTimeout(()=>c.abort(),timeoutMs);try{return await fetch(u,{signal:c.signal,credentials:'include',cache:'no-store',...o})}catch(e){if(retry>0)return fetchWithTimeout(u,{timeoutMs,retry:retry-1,...o});throw e}finally{clearTimeout(t)}}
-function warm(){fetchWithTimeout(`${API_BASE}/__ping`,{timeoutMs:5000}).catch(()=>{})}warm();
-const v=document.getElementById('preview'),C=document.getElementById('snapshot'),x=C.getContext('2d',{willReadFrequently:true});
-const fD=n=>document.getElementById(n);const s=fD('r_shipDate'),nm=fD('r_name'),ph=fD('r_phone'),ad=fD('r_addr'),md=fD('r_model'),dv=fD('r_deviceId'),hint=fD('hint');
-let st=null,preview=null,ocrRun=false;
-async function stopCam(){try{if(v.srcObject){v.srcObject.getTracks().forEach(t=>t.stop());v.srcObject=null}if(st){st.getTracks().forEach(t=>t.stop());st=null}}catch{}}
-async function initCam(){await stopCam();try{st=await navigator.mediaDevices.getUserMedia({video:{facingMode:{exact:'environment'}},audio:false})}catch{try{st=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false})}catch{st=await navigator.mediaDevices.getUserMedia({video:true,audio:false})}}v.srcObject=st;await v.play().catch(()=>{})}
-addEventListener('pageshow',e=>{if(e.persisted||!v.srcObject)initCam()});addEventListener('pagehide',()=>{stopCam()});document.addEventListener('visibilitychange',()=>{if(document.hidden)stopCam();else initCam()});addEventListener('beforeunload',()=>{stopCam()});
-function clamp(a,b,c){return Math.max(b,Math.min(c,a))}
-function parseMD(r){const o=(r||'').toString().trim();const u=o.toUpperCase().replace(/[^A-Z0-9]/g,'');const M={SM:'심포니',LT:'락티나',S:'스윙',M:'스윙맥스',F:'프리스타일',G:'각시밀',C:'시밀레'};let m=u.match(/^(SM|LT)(\d{2,})$/);if(m)return{model:M[m[1]]||'-',deviceId:m[2],raw:o};m=u.match(/^([SMFLGC])[A-Z0-9]*$/);if(m)return{model:M[m[1]]||'-',deviceId:o,raw:o};return{model:'-',deviceId:'-',raw:o}}
-function panel(d){fD('ocrPanel').style.display='block';s.textContent=d['출고일']||'-';nm.textContent=d['대여자명']||'-';ph.textContent=d['전화번호']||'-';ad.textContent=d['주소']||'-';md.textContent=d['기종']||'-';dv.textContent=d['기기번호']||'-'}
-function scanQR(){try{const img=x.getImageData(0,0,C.width,C.height);const c=jsQR(img.data,img.width,img.height,{inversionAttempts:'attemptBoth'});return c?{text:c.data,loc:c.location}:{text:'',loc:null}}catch{return{text:'',loc:null}}}
-function badge(t,X=16,Y=12){if(!t)return;const p=12;x.font='bold 26px system-ui,-apple-system,Segoe UI,Roboto';const w=x.measureText(t).width+p*2;const h=40;X=clamp(X,8,C.width-w-8);Y=clamp(Y,8,C.height-h-8);x.fillStyle='rgba(0,0,0,0.65)';x.fillRect(X,Y,w,h);x.fillStyle='#fff';x.fillText(t,X+p*.6,Y+28)}
-function toBlob(cb){const maxW=1100;const sc=Math.min(1,maxW/C.width);if(sc<1){const t=document.createElement('canvas');t.width=Math.round(C.width*sc);t.height=Math.round(C.height*sc);t.getContext('2d',{willReadFrequently:true}).drawImage(C,0,0,t.width,t.height);t.toBlob(cb,'image/jpeg',0.6)}else{C.toBlob(cb,'image/jpeg',0.6)}}
-initCam();
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>유축기 출고 스캔 (PWA)</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <meta name="theme-color" content="#111827" />
+  <style>
+    :root { color-scheme: light dark; }
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Apple SD Gothic Neo,Noto Sans KR;margin:0;padding:16px;background:#fff;color:#111827}
+    header{font-weight:800;font-size:22px;margin:4px 0 12px}
+    .card{border:1px solid #e5e7eb;border-radius:12px;padding:16px}
+    button{padding:12px 16px;border-radius:12px;border:0;background:#111827;color:#fff;font-weight:700}
+    video,canvas{width:100%;border:1px solid #e5e7eb;border-radius:10px;background:#000}
+    #preview,#snapshot{width:100%;aspect-ratio:16/7;object-fit:cover}
+    .muted{opacity:.7}
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+</head>
+<body>
+  <header>유축기 출고 스캔</header>
 
-fD('captureBtn').addEventListener('click',()=>{
-  const w=v.videoWidth,h=v.videoHeight;if(!w||!h)return alert('카메라 초기화 대기 후 다시 시도');
-  C.width=w;C.height=h;x.drawImage(v,0,0,w,h);C.style.display='block';
-  const {text:q,loc}=scanQR();const mdv=parseMD(q);const label=`${mdv.model} / ${mdv.deviceId}`;
-  let X=16,Y=12;if(loc&&loc.topLeftCorner){X=Math.max(16,loc.topLeftCorner.x-8);Y=Math.max(12,loc.topLeftCorner.y-48)}badge(label,X,Y);
-  preview={"출고일":new Date().toISOString().slice(0,10),"대여자명":"-","전화번호":"-","주소":"-","기기번호":mdv.deviceId||"-","기종":mdv.model||"-"};panel(preview);hint.textContent="프리뷰 인식 중... (최대 5초)";
-  if(ocrRun)return;ocrRun=true;
-  toBlob(async (blob)=>{
-    const fd=new FormData();fd.append('image',blob,'p.jpg');fd.append('qr_text',q||'');
-    try{
-      const r=await fetchWithTimeout(`${API_BASE}/preview-ocr`,{method:'POST',body:fd,timeoutMs:5000,retry:0});
-      if(r.ok){const j=await r.json().catch(()=>null);if(j&&j.data){const d=j.data;preview={"출고일":d['출고일']||preview['출고일'],"대여자명":d['대여자명']||preview['대여자명'],"전화번호":d['전화번호']||preview['전화번호'],"주소":d['주소']||preview['주소'],"기기번호":preview['기기번호'],"기종":preview['기종']};panel(preview);hint.textContent="정식 OCR 보강 중... (최대 5초)"}}
-    }catch(e){hint.textContent=`프리뷰 오류: ${e.message||e}`}
-    const fd2=new FormData();fd2.append('image',blob,'f.jpg');fd2.append('qr_text',q||'');
-    try{
-      const r=await fetchWithTimeout(`${API_BASE}/process-ocr/`,{method:'POST',body:fd2,timeoutMs:5000,retry:0});
-      if(r.ok){const j=await r.json().catch(()=>null);const d=j&&j.data;if(d){preview={"출고일":d['출고일']||preview['출고일'],"대여자명":d['대여자명']||preview['대여자명'],"전화번호":d['전화번호']||preview['전화번호'],"주소":d['주소']||preview['주소'],"기기번호":preview['기기번호'],"기종":preview['기종']};panel(preview);hint.textContent=""}}
-    }catch(e){hint.textContent=`정식 OCR 오류: ${e.message||e}`}finally{ocrRun=false}
+  <div class="card">
+    <video id="preview" autoplay playsinline muted></video>
+    <br/><br/>
+    <button id="captureBtn">사진 촬영</button>
+
+    <canvas id="snapshot" style="display:none;margin-top:12px;"></canvas>
+
+    <div id="ocrPanel" style="display:none;margin-top:16px;">
+      <div style="font-weight:800;margin-bottom:8px;">인식 결과 (확인 후 저장)</div>
+      <div style="line-height:1.9">
+        출고일: <span id="r_shipDate">-</span><br/>
+        대여자명: <span id="r_name">-</span><br/>
+        전화번호: <span id="r_phone">-</span><br/>
+        주소: <span id="r_addr">-</span><br/>
+        기종: <span id="r_model">-</span> / 기기번호: <span id="r_deviceId">-</span>
+      </div>
+      <button id="confirmBtn" style="margin-top:12px;">확인 (엑셀 저장)</button>
+      <div id="hint" class="muted" style="margin-top:8px;font-size:12px;"></div>
+    </div>
+  </div>
+
+<script>
+const APP_VER  = "2025-08-27-accuracy-first";
+const API_BASE = ""; // same origin
+
+/* SW 최신화 */
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js?ver=' + APP_VER).then(async (reg) => {
+    try {
+      await reg.update();
+      if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+      if (reg.installing) reg.installing.addEventListener('statechange', (e) => {
+        if (e.target.state === 'installed') reg.waiting?.postMessage({ type: 'SKIP_WAITING' });
+      });
+      navigator.serviceWorker.addEventListener('controllerchange', () => { location.reload(); });
+    } catch {}
+  }).catch(()=>{});
+}
+
+/* fetch 유틸: 시간 제한 X (정확도/저장 성공 우선) */
+async function fetchNoTimeout(url, options={}){
+  return fetch(url, { credentials:'include', cache:'no-store', ...options });
+}
+function warm(){ fetchNoTimeout(`${API_BASE}/__ping`).catch(()=>{}); }
+warm();
+
+/* 요소 */
+const video   = document.getElementById('preview');
+const canvas  = document.getElementById('snapshot');
+const ctx     = canvas.getContext('2d', { willReadFrequently: true });
+
+const r_shipDate = document.getElementById('r_shipDate');
+const r_name     = document.getElementById('r_name');
+const r_phone    = document.getElementById('r_phone');
+const r_addr     = document.getElementById('r_addr');
+const r_model    = document.getElementById('r_model');
+const r_deviceId = document.getElementById('r_deviceId');
+const hint       = document.getElementById('hint');
+
+let __stream = null;
+let ocrPreview = null;
+let ocrRunning = false;
+
+/* 카메라 */
+async function stopCamera(){
+  try {
+    if (video.srcObject) {
+      video.srcObject.getTracks().forEach(t=>t.stop());
+      video.srcObject = null;
+    }
+    if (__stream) {
+      __stream.getTracks().forEach(t=>t.stop());
+      __stream = null;
+    }
+  } catch {}
+}
+async function initCamera(){
+  await stopCamera();
+  try {
+    __stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ exact:'environment' }}, audio:false });
+  } catch {
+    try {
+      __stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' }}, audio:false });
+    } catch {
+      __stream = await navigator.mediaDevices.getUserMedia({ video:true, audio:false });
+    }
+  }
+  video.srcObject = __stream;
+  await video.play().catch(()=>{});
+}
+
+/* 라이프사이클 */
+window.addEventListener('pageshow', (e) => { if (e.persisted || !video.srcObject) initCamera(); });
+window.addEventListener('pagehide', () => { stopCamera(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopCamera(); else initCamera(); });
+window.addEventListener('beforeunload', () => { stopCamera(); });
+
+/* 유틸 */
+function clamp(v, min, max){ return Math.max(min, Math.min(max, v)); }
+function parseModelDevice(raw) {
+  const original = (raw || '').toString().trim();
+  const u = original.toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const MAP = { SM:'심포니', LT:'락티나', S:'스윙', M:'스윙맥스', F:'프리스타일', G:'각시밀', C:'시밀레' };
+  const m2 = u.match(/^(SM|LT)(\d{2,})$/);
+  if (m2) return { model: MAP[m2[1]] || '-', deviceId: m2[2], raw: original };
+  const m1 = u.match(/^([SMFLGC])[A-Z0-9]*$/);
+  if (m1)  return { model: MAP[m1[1]] || '-', deviceId: original, raw: original };
+  return { model: '-', deviceId: '-', raw: original };
+}
+function populatePanel(d){
+  document.getElementById('ocrPanel').style.display = 'block';
+  r_shipDate.textContent = d['출고일']   || '-';
+  r_name.textContent     = d['대여자명'] || '-';
+  r_phone.textContent    = d['전화번호'] || '-';
+  r_addr.textContent     = d['주소']     || '-';
+  r_model.textContent    = d['기종']     || '-';
+  r_deviceId.textContent = d['기기번호'] || '-';
+}
+function scanQRFromCanvas() {
+  try {
+    const img = ctx.getImageData(0,0,canvas.width,canvas.height);
+    const code = jsQR(img.data, img.width, img.height, { inversionAttempts:'attemptBoth' });
+    return code ? { text: code.data, loc: code.location } : { text:'', loc:null };
+  } catch { return { text:'', loc:null }; }
+}
+function drawBadge(text, x=16, y=12){
+  if (!text) return;
+  const pad = 12;
+  ctx.font = 'bold 26px system-ui,-apple-system,Segoe UI,Roboto';
+  const w = ctx.measureText(text).width + pad * 2;
+  const h = 40;
+  x = clamp(x, 8, canvas.width - w - 8);
+  y = clamp(y, 8, canvas.height - h - 8);
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(text, x + pad * 0.6, y + 28);
+}
+function canvasToBlobResized(fromCanvas, cb) {
+  // 정확도 위해 과도한 축소 없음 (최대 1600px)
+  const maxW = 1600;
+  const scale = Math.min(1, maxW / fromCanvas.width);
+  if (scale < 1) {
+    const tmp = document.createElement('canvas');
+    tmp.width = Math.round(fromCanvas.width * scale);
+    tmp.height = Math.round(fromCanvas.height * scale);
+    tmp.getContext('2d', { willReadFrequently: true }).drawImage(fromCanvas, 0, 0, tmp.width, tmp.height);
+    tmp.toBlob(cb, 'image/jpeg', 0.85);
+  } else {
+    fromCanvas.toBlob(cb, 'image/jpeg', 0.85);
+  }
+}
+
+/* 초기 카메라 */
+initCamera();
+
+/* 촬영 */
+document.getElementById('captureBtn').addEventListener('click', () => {
+  const w = video.videoWidth, h = video.videoHeight;
+  if (!w || !h) return alert('카메라 초기화 대기 후 다시 시도');
+
+  canvas.width = w; canvas.height = h;
+  ctx.drawImage(video, 0, 0, w, h);
+  canvas.style.display = 'block';
+
+  // QR → 기종/기기번호 배지
+  const { text:qr, loc } = scanQRFromCanvas();
+  const md = parseModelDevice(qr);
+  const label = `${md.model} / ${md.deviceId}`;
+  let x = 16, y = 12;
+  if (loc && loc.topLeftCorner) {
+    x = Math.max(16, loc.topLeftCorner.x - 8);
+    y = Math.max(12, loc.topLeftCorner.y - 48);
+  }
+  drawBadge(label, x, y);
+
+  // 초기값 표시
+  ocrPreview = {
+    "출고일":  new Date().toISOString().slice(0,10),
+    "대여자명": "-",
+    "전화번호": "-",
+    "주소": "-",
+    "기기번호": md.deviceId || "-",
+    "기종": md.model || "-"
+  };
+  populatePanel(ocrPreview);
+  hint.textContent = "프리뷰 인식 중... (정확도 우선)";
+
+  if (ocrRunning) return;
+  ocrRunning = true;
+
+  canvasToBlobResized(canvas, async (blob) => {
+    const fdPrev = new FormData();
+    fdPrev.append('image', blob, 'p.jpg');
+    fdPrev.append('qr_text', qr || '');
+
+    // 프리뷰 — 시간 제한 없이 정확도 우선
+    try {
+      const rPrev = await fetchNoTimeout(`${API_BASE}/preview-ocr`, { method:'POST', body: fdPrev });
+      if (rPrev.ok) {
+        const j = await rPrev.json().catch(()=>null);
+        if (j && j.data) {
+          const d = j.data;
+          ocrPreview = {
+            "출고일":  d['출고일']   || ocrPreview['출고일'],
+            "대여자명": d['대여자명'] || ocrPreview['대여자명'],
+            "전화번호": d['전화번호'] || ocrPreview['전화번호'],
+            "주소":     d['주소']     || ocrPreview['주소'],
+            "기기번호": ocrPreview['기기번호'],
+            "기종":     ocrPreview['기종'],
+          };
+          populatePanel(ocrPreview);
+          hint.textContent = "정식 OCR 보강 중... (정확도 우선)";
+        } else {
+          hint.textContent = "프리뷰 응답 형식 오류";
+        }
+      } else {
+        const txt = await rPrev.text().catch(()=>rPrev.statusText);
+        hint.textContent = `프리뷰 실패: ${rPrev.status} ${txt}`;
+      }
+    } catch(e){
+      hint.textContent = `프리뷰 네트워크 오류: ${e.message||e}`;
+    }
+
+    // 정식 보강 — 시간 제한 없이 정확도 우선
+    const fdFull = new FormData();
+    fdFull.append('image', blob, 'f.jpg');
+    fdFull.append('qr_text', qr || '');
+    try {
+      const rFull = await fetchNoTimeout(`${API_BASE}/process-ocr/`, { method:'POST', body: fdFull });
+      if (rFull.ok) {
+        const j = await rFull.json().catch(()=>null);
+        const d = (j && j.data) || null;
+        if (d) {
+          ocrPreview = {
+            "출고일":  d['출고일']   || ocrPreview['출고일'],
+            "대여자명": d['대여자명'] || ocrPreview['대여자명'],
+            "전화번호": d['전화번호'] || ocrPreview['전화번호'],
+            "주소":     d['주소']     || ocrPreview['주소'],
+            "기기번호": ocrPreview['기기번호'],
+            "기종":     ocrPreview['기종'],
+          };
+          populatePanel(ocrPreview);
+          hint.textContent = "";
+        } else {
+          const txt = await rFull.text().catch(()=>rFull.statusText);
+          hint.textContent = `정식 OCR 결과 없음: ${txt}`;
+        }
+      } else {
+        const txt = await rFull.text().catch(()=>rFull.statusText);
+        hint.textContent = `정식 OCR 실패: ${rFull.status} ${txt}`;
+      }
+    } catch(e){
+      hint.textContent = `정식 OCR 네트워크 오류: ${e.message||e}`;
+    } finally {
+      ocrRunning = false;
+    }
   });
 });
 
-fD('confirmBtn').addEventListener('click',async ()=>{
-  if(!preview)return alert('인식 결과가 없습니다. 먼저 촬영하세요.');
-  const btn=fD('confirmBtn');btn.disabled=true;
-  const ts=new Date().toISOString().replace(/[:.TZ]/g,'').slice(0,14);
-  C.toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`scan_${ts}.jpg`;a.click()},'image/jpeg',0.7);
+/* 확인(엑셀 저장) — 동기 저장 (성공/실패 확정) */
+document.getElementById('confirmBtn').addEventListener('click', async () => {
+  if (!ocrPreview) return alert('인식 결과가 없습니다. 먼저 촬영하세요.');
+  const btn = document.getElementById('confirmBtn');
+  btn.disabled = true;
+
   try{
-    const r=await fetchWithTimeout(`${API_BASE}/save-result`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(preview),timeoutMs:5000,retry:0});
-    let j={};try{j=await r.clone().json()}catch{}
-    if(r.status===401||(j?.write_error&&j.write_error.error==='no_access_token')){alert('로그인이 필요합니다. 1회만 진행하면 30일 유지됩니다.');location.href=`${API_BASE}/login`;return}
-    if(r.ok&&j.status==='queued'&&j.job_id){
-      const end=Date.now()+5000;while(Date.now()<end){await new Promise(s=>setTimeout(s,1000));
-        try{const s=await fetchWithTimeout(`${API_BASE}/job-status?job_id=${encodeURIComponent(j.job_id)}`,{timeoutMs:2000});if(!s.ok)break;const js=await s.json().catch(()=>null);if(!js)break;if(js.status==='success'){alert('엑셀 저장 완료');return}if(js.status==='failed'){alert('저장 실패: '+(js.error?.text||'서버 오류'));return}}catch{break}}
-      alert('업로드 지연: 서버에서 계속 처리 중입니다.');return
+    const res = await fetchNoTimeout(`${API_BASE}/save-result`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(ocrPreview),
+    });
+
+    let api = {}; try { api = await res.clone().json(); } catch {}
+
+    if (res.status === 401 || (api?.write_error && api.write_error.error === 'no_access_token')){
+      alert('엑셀 저장을 위해 로그인이 필요합니다. /login을 먼저 수행해 주세요.');
+      location.href = `${API_BASE}/login`;
+      return;
     }
-    if(r.ok&&j.status==='success'){alert('엑셀 저장 완료');return}
-    const txt=await r.text().catch(()=>r.statusText);alert('저장 실패: '+(txt||r.statusText))
-  }catch(e){alert('서버 전송 실패: '+e.message)}finally{btn.disabled=false}
+
+    if (res.ok && api.status === 'success'){
+      alert('엑셀 저장 완료');
+    } else {
+      const txt = await res.text().catch(()=>res.statusText);
+      alert('저장 실패: ' + (txt || res.statusText));
+    }
+  } catch(e){
+    alert('서버 전송 실패: ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
 });
-</script></body></html>
+</script>
+</body>
+</html>
+
 
 
 

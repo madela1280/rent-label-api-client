@@ -1,166 +1,167 @@
-# ocr_utils.py — 이름/전화 필수, 주소는 앞부분(식별용)만 추출 버전
-# - 속도: 프리뷰는 저해상도 + 가벼운 전처리, 정식은 보강 단계만 강처리
-# - 전화: 전체 숫자 유지(마스킹 제거), 특정 금지 번호는 공란 처리
-# - 이름: 전화번호가 있는 "같은 줄"의 왼쪽에서 한글 2~4글자 토큰을 우선 추출
-# - 주소: 전화줄 "다음 줄"에서 앞부분만(예: 서울 강남구 개포동 12) 잘라 식별용으로 반환
-# - QR에서 기종/기기번호는 그대로 유지
+# ocr_utils.py — 정확도 우선 버전
+# - 전체 OCR + 위치 데이터(image_to_data)로 "전화 줄"을 먼저 찾고
+#   같은 줄의 왼쪽에서 이름(한글 2~4자), 다음 줄에서 주소 앞부분(식별용)만 추출
+# - 프리뷰: 가벼운 전처리 1회
+# - 정식: 전처리(보통/강) 2회 중 "전화 검출 점수"가 높은 쪽 선택
+# - QR에서 기종/기기번호 유지
 
 import os, re
 from datetime import date
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 from PIL import Image, ImageOps, ImageFilter
 import pytesseract
 
-# ---------------- 환경 ----------------
-try:
-    import cv2  # 현재 로직에서는 사용하지 않지만, 설치 유무만 체크
-    HAS_CV2 = True
-except Exception:
-    HAS_CV2 = False
-
-# Tesseract 경로 환경변수 우선 사용
 pytesseract.pytesseract.tesseract_cmd = os.getenv(
     "TESSERACT_CMD",
     pytesseract.pytesseract.tesseract_cmd
 )
 
-# ---------------- OCR 유틸 ----------------
+# -------- 전처리 --------
 def _preprocess(img: Image.Image, strong: bool=False) -> Image.Image:
-    """가벼운 전처리: 속도 우선 / strong일 때만 이진화 강화."""
     g = img.convert("L")
     g = ImageOps.autocontrast(g)
     if strong:
-        g = g.filter(ImageFilter.UnsharpMask(radius=1.2, percent=220, threshold=2))
-        # 이진화: 너무 공격적으로 하지 않음 (주소 한글 깨짐 방지)
+        g = g.filter(ImageFilter.UnsharpMask(radius=1.2, percent=240, threshold=2))
         g = g.point(lambda x: 255 if x > 165 else 0, mode="1").convert("L")
     else:
         g = g.filter(ImageFilter.UnsharpMask(radius=1.0, percent=160, threshold=3))
     return g
 
-def _ocr_text(img: Image.Image, psm:int=6) -> str:
-    """한국어 위주 인식: eng 제외로 속도 향상/오인식 감소"""
-    try:
-        # 다단/문단 → 6, 한 줄 → 7
-        return pytesseract.image_to_string(img, config=f"--oem 3 --psm {psm}", lang="kor")
-    except Exception:
-        return ""
-
-def _resize(img: Image.Image, max_w:int=1400) -> Image.Image:
-    w,h = img.size
+def _resize(img: Image.Image, max_w:int) -> Image.Image:
+    w, h = img.size
     if w > max_w:
-        s = max_w/float(w)
+        s = max_w / float(w)
         return img.resize((max_w, int(h*s)))
     return img
 
-# ---------------- 규칙 ----------------
-# 010-1234-5678, 010 1234 5678, 010.1234.5678 모두 허용
+# -------- 규칙/정규식 --------
 R_010 = re.compile(r"(010)[-\s\.]?(\d{3,4})[-\s\.]?(\d{4})")
 LABEL_NAME = re.compile(r"^(받는.?|수령인|수취인|이름)\s*[:：]?\s*", re.I)
 LABEL_ADDR = re.compile(r"^(주소|배달지|배송지)\s*[:：]?\s*", re.I)
-
-# 주소 토큰(앞부분 식별용)
 ADDR_TOKENS = ("시","도","군","구","읍","면","동","리","로","길","번길","호")
-BANNED_PHONES = {"010-7394-3535"}  # 금지 번호는 공란 처리
+BANNED_PHONES = {"010-7394-3535"}
 
 def _clean(s:str) -> str:
-    return re.sub(r"[|\[\]{}<>]+"," ",s).strip()
+    return re.sub(r"[|\[\]{}<>]+"," ", s).strip()
 
 def _norm_phone(m: re.Match) -> str:
-    """정규화: 010-1234-5678 형태(마스킹 제거, 전부 보존)."""
     return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
 
-def _extract_name_from_left(text_left:str) -> str:
-    """
-    왼쪽 영역에서 가장 끝쪽 한글 토큰(2~4글자)을 이름으로.
-    너무 긴 토큰(5+), 숫자/영문 포함 토큰은 제외.
-    """
-    s = LABEL_NAME.sub("", text_left).strip()
-    # 공백/구분자 기준 토큰화
-    toks = re.findall(r"[가-힣]{2,4}", s)
-    if toks:
-        return toks[-1]  # 가장 오른쪽(끝) 토큰이 이름일 확률이 높음
-    return ""
-
-def _looks_like_address_line(s:str) -> bool:
-    s2 = LABEL_ADDR.sub("", s).strip()
-    if not s2: return False
-    # 주소 앞부분 특징: 토큰(시/구/동 등) + 숫자 일부 동반
-    return (any(t in s2 for t in ADDR_TOKENS) or bool(re.search(r"\d", s2)))
-
-def _address_prefix(s:str) -> str:
-    """
-    주소 라인에서 '앞부분 식별용'만 잘라 반환.
-    예: '서울특별시 강남구 개포동 12...' → '서울 강남구 개포동 12'
-    - 시/도/구/군/동 등 행정 토큰과 첫 숫자까지 포함
-    - 너무 길어지지 않게 18~24자 정도로 클립 (가독/일관성)
-    """
-    s2 = LABEL_ADDR.sub("", s).strip()
-    if not s2:
-        return ""
-
-    # 괄호/상세 시작 전까지만
+def _address_prefix(s: str) -> str:
+    s2 = LABEL_ADDR.sub("", s or "").strip()
+    if not s2: return ""
     s2 = re.split(r"[(),]", s2)[0].strip()
-
-    # '…동 12' 같은 형태로 첫 숫자 토큰을 찾으면 그 숫자까지 포함
     mnum = re.search(r"\d+", s2)
     cut = None
     if mnum:
-        # 숫자 다음에 오는 단어 경계까지만
         cut = mnum.end()
-        # 숫자 뒤 공백 하나까지 포함
         if cut < len(s2) and s2[cut] == ' ':
             cut += 1
-
     head = s2[:cut] if cut else s2
-
-    # 행정구역 토큰 정규화(시/도/구/동 앞뒤 공백 정리)
     head = re.sub(r"\s+", " ", head).strip()
-
-    # '서울특별시' → '서울' 간단 줄임(가독)
     head = head.replace("서울특별시", "서울").replace("부산광역시","부산").replace("대구광역시","대구") \
                .replace("인천광역시","인천").replace("광주광역시","광주").replace("대전광역시","대전") \
                .replace("울산광역시","울산").replace("세종특별자치시","세종")
-
-    # 너무 길면 앞 22자 정도로 클립
-    if len(head) > 24:
-        head = head[:24].rstrip()
-
-    # 최소 식별: 구/군/시 중 하나라도 포함되면 OK
+    if len(head) > 30:
+        head = head[:30].rstrip()
     if not any(t in head for t in ("구","군","시")) and not re.search(r"\d", head):
-        # 식별력 부족하면 빈값
         return ""
     return head
 
-def _parse_fields(lines: List[str]) -> dict:
-    """전화번호가 있는 줄을 기준으로: 왼쪽=이름, 다음 줄=주소(식별용 앞부분만)."""
-    lines = [_clean(x) for x in lines if x and x.strip()]
-    phone, name, addr = "", "", ""
+# -------- OCR with boxes --------
+def _tess_data(img: Image.Image, psm:int=6) -> List[Dict[str, Any]]:
+    """
+    pytesseract.image_to_data 결과를 파싱해서 단어 단위 정보 리스트 반환.
+    각 항목: {text, left, top, width, height, conf, line_id}
+    line_id는 (block_num, par_num, line_num) 튜플로 구성.
+    """
+    try:
+        raw = pytesseract.image_to_data(img, config=f"--oem 3 --psm {psm}", lang="kor", output_type=pytesseract.Output.DICT)
+    except Exception:
+        return []
 
-    for i, ln in enumerate(lines):
-        m = R_010.search(ln)
-        if not m:
+    n = len(raw.get("text", []))
+    out = []
+    for i in range(n):
+        txt = (raw["text"][i] or "").strip()
+        if not txt:
             continue
+        try:
+            conf = float(raw["conf"][i])
+        except:
+            conf = -1.0
+        item = {
+            "text": txt,
+            "left": int(raw["left"][i]),
+            "top": int(raw["top"][i]),
+            "width": int(raw["width"][i]),
+            "height": int(raw["height"][i]),
+            "conf": conf,
+            "line_id": (int(raw["block_num"][i]), int(raw["par_num"][i]), int(raw["line_num"][i])),
+        }
+        out.append(item)
+    return out
 
-        # 전화번호 정규화 (마스킹 없음)
+def _group_lines(words: List[Dict[str, Any]]) -> Dict[Tuple[int,int,int], List[Dict[str, Any]]]:
+    lines: Dict[Tuple[int,int,int], List[Dict[str, Any]]] = {}
+    for w in words:
+        lines.setdefault(w["line_id"], []).append(w)
+    # 좌->우 정렬
+    for k in lines:
+        lines[k].sort(key=lambda x: x["left"])
+    return lines
+
+def _line_text(words: List[Dict[str, Any]]) -> str:
+    return _clean(" ".join(w["text"] for w in words))
+
+def _select_best_phone(line_text: str) -> Tuple[str, int, int]:
+    """
+    줄 텍스트에서 전화번호 후보를 찾아 정규화 반환.
+    (전화문자열, start_index, end_index) — 없으면 ("", -1, -1)
+    """
+    best = ("", -1, -1)
+    for m in R_010.finditer(line_text):
         phone = _norm_phone(m)
         if phone in BANNED_PHONES:
-            phone = ""
+            continue
+        # 간단 점수: 가운데 3~4자리 길이 선호, 하이픈 포함 형태 선호
+        score = (1 if len(m.group(2)) == 4 else 0) + (1 if "-" in line_text[m.start():m.end()] else 0)
+        if best[0] == "" or score > ((1 if len(best[0].split("-")[1])==4 else 0)):
+            best = (phone, m.start(), m.end())
+    return best
 
-        # 같은 줄 왼쪽에서 이름 후보 추출
-        left = ln[:m.start()]
-        name = _extract_name_from_left(left)
+def _extract_from_lines(lines: Dict[Tuple[int,int,int], List[Dict[str, Any]]]) -> Dict[str, str]:
+    """
+    줄 단위로 전화 → 이름(왼쪽) → 주소(다음 줄) 추출
+    """
+    # 라인 키 정렬(문서 상단→하단)
+    keys = sorted(lines.keys(), key=lambda k: (k[0], k[1], k[2]))
+    for idx, key in enumerate(keys):
+        words = lines[key]
+        tline = _line_text(words)
+        phone, p_s, p_e = _select_best_phone(tline)
+        if not phone:
+            continue
 
-        # 바로 아래 줄 1줄만 주소 후보
-        if i + 1 < len(lines):
-            cand = lines[i+1]
-            if _looks_like_address_line(cand):
-                addr = _address_prefix(cand)
+        # 이름: 같은 줄의 왼쪽 영역 텍스트에서 한글 2~4자 토큰 최우선
+        left_text = tline[:p_s].strip()
+        left_text = LABEL_NAME.sub("", left_text)
+        name_tokens = re.findall(r"[가-힣]{2,4}", left_text)
+        name = name_tokens[-1] if name_tokens else ""
 
-        break  # 가장 먼저 찾은 전화 한 번만 사용
+        # 주소: 다음 줄(있다면)에서 앞부분 식별용만
+        addr = ""
+        if idx + 1 < len(keys):
+            next_words = lines[keys[idx+1]]
+            next_text = _line_text(next_words)
+            if next_text:
+                addr = _address_prefix(next_text)
 
-    return {"대여자명": name, "전화번호": phone, "주소": addr}
+        return {"대여자명": name, "전화번호": phone, "주소": addr}
 
-# ---------------- QR → 기종/기기번호 ----------------
+    return {"대여자명": "", "전화번호": "", "주소": ""}
+
+# -------- QR 파싱 --------
 def _map_model_device(qr_text:str)->Tuple[str,str]:
     raw = (qr_text or "").strip()
     u = re.sub(r"[^A-Z0-9]", "", raw.upper())
@@ -173,38 +174,8 @@ def _map_model_device(qr_text:str)->Tuple[str,str]:
         return MAP.get(m1.group(1), "-"), raw
     return "-", ""
 
-# ---------------- 메인 엔트리 ----------------
-def make_final_entry(qr_text:str, img_path:str):
-    """정식 OCR: 텍스트가 빈약하면 강처리 보강."""
-    im = Image.open(img_path)
-    im = _resize(im, 1400)
-    txt = _ocr_text(_preprocess(im, False), psm=6)
-    if len(re.sub(r"\s+","",txt)) < 16:
-        # 너무 빈약하면 강처리(한 번만)
-        txt2 = _ocr_text(_preprocess(im, True), psm=6)
-        if len(re.sub(r"\s+","",txt2)) > len(re.sub(r"\s+","",txt)):
-            txt = txt2
-
-    lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
-    parsed = _parse_fields(lines)
-    model, device_id = _map_model_device(qr_text)
-
-    return {
-        "출고일": date.today().isoformat(),
-        "대여자명": parsed.get("대여자명",""),
-        "전화번호": parsed.get("전화번호",""),
-        "주소": parsed.get("주소",""),
-        "기기번호": device_id,
-        "기종": model,
-    }
-
-def make_final_entry_fast(qr_text:str, img_path:str):
-    """프리뷰: 해상도 낮게 + 가벼운 전처리, 1회 OCR만."""
-    im = Image.open(img_path)
-    im = _resize(im, 900)  # 프리뷰는 더 작게
-    txt = _ocr_text(_preprocess(im, False), psm=6)
-    lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
-    parsed = _parse_fields(lines)
+# -------- 엔트리 포맷 --------
+def _final(qr_text: str, parsed: Dict[str,str]) -> Dict[str,str]:
     model, device_id = _map_model_device(qr_text)
     return {
         "출고일": date.today().isoformat(),
@@ -215,5 +186,40 @@ def make_final_entry_fast(qr_text:str, img_path:str):
         "기종": model,
     }
 
+# -------- 공개 함수 --------
+def make_final_entry_fast(qr_text: str, img_path: str) -> Dict[str,str]:
+    im = Image.open(img_path)
+    im = _resize(im, 1400)  # 프리뷰도 정확도 위해 충분 해상도
+    im_p = _preprocess(im, False)
+    words = _tess_data(im_p, psm=6)
+    lines = _group_lines(words)
+    parsed = _extract_from_lines(lines)
+    return _final(qr_text, parsed)
 
+def make_final_entry(qr_text: str, img_path: str) -> Dict[str,str]:
+    """
+    보강 단계: 보통/강 전처리 두 번 돌려서
+    '전화번호 검출 여부'를 최우선으로 선택
+    """
+    im = Image.open(img_path)
+    im = _resize(im, 2000)
+
+    # pass1: 보통
+    im1 = _preprocess(im, False)
+    w1 = _tess_data(im1, psm=6)
+    l1 = _group_lines(w1)
+    p1 = _extract_from_lines(l1)
+
+    # pass2: 강
+    im2 = _preprocess(im, True)
+    w2 = _tess_data(im2, psm=6)
+    l2 = _group_lines(w2)
+    p2 = _extract_from_lines(l2)
+
+    # 선택 기준: 전화 검출 우선, 그 다음 이름/주소 길이
+    score1 = (1 if p1.get("전화번호") else 0) + (1 if p1.get("대여자명") else 0) + (1 if p1.get("주소") else 0)
+    score2 = (1 if p2.get("전화번호") else 0) + (1 if p2.get("대여자명") else 0) + (1 if p2.get("주소") else 0)
+    parsed = p2 if score2 > score1 else p1
+
+    return _final(qr_text, parsed)
 
