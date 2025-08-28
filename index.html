@@ -48,7 +48,7 @@
   <div id="tapDot"></div>
 
 <script>
-const APP_VER  = "2025-08-27-anchor-v3";
+const APP_VER  = "2025-08-27-anchor-v4";
 const API_BASE = ""; // 같은 오리진
 
 /* SW 강제 최신화 */
@@ -264,7 +264,7 @@ function doCapture(){
   if (ocrRunning) return;
   ocrRunning = true;
 
- canvasToBlobResized(canvas, async (blob) => {
+canvasToBlobResized(canvas, async (blob) => {
   const fdFull = new FormData();
   fdFull.append('image', blob, 'f.jpg');
   fdFull.append('qr_text', qr || '');
@@ -290,12 +290,14 @@ function doCapture(){
       "주소":     d['주소']     || "-",
     };
     populatePanel(ocrPreview);
-  } catch(e){
+  } catch (e) {
     alert('인식 네트워크 오류: ' + (e?.message || e));
   } finally {
     ocrRunning = false;
   }
-});
+}); // canvasToBlobResized 콜백 닫힘
+
+} // doCapture() 닫힘
 
 /* 확인(엑셀 저장 + 사진저장) */
 document.getElementById('confirmBtn').addEventListener('click', async () => {
@@ -312,66 +314,33 @@ document.getElementById('confirmBtn').addEventListener('click', async () => {
     a.click();
   }, 'image/jpeg', 0.7);
 
- try {
-  const res = await fetchWithTimeout(`${API_BASE}/save-result`, {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(ocrPreview),
-    timeoutMs: 30000,
-    retry: 0
-  });
-  let txt = ""; try { txt = await res.clone().text(); } catch {}
-  let api = {}; try { api = JSON.parse(txt); } catch {}
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/save-result`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(ocrPreview),
+      timeoutMs: 30000,
+      retry: 0
+    });
+    let txt = ""; try { txt = await res.clone().text(); } catch {}
+    let api = {}; try { api = JSON.parse(txt); } catch {}
 
-  if (res.status === 401 || (api?.write_error && api.write_error.error === 'no_access_token')){
-    alert('엑셀 저장을 위해 로그인이 필요합니다. 한 번만 진행하면 됩니다.');
-    location.href = `${API_BASE}/login`;
-    return;
+    if (res.status === 401 || (api?.write_error && api.write_error.error === 'no_access_token')){
+      alert('엑셀 저장을 위해 로그인이 필요합니다. 한 번만 진행하면 됩니다.');
+      location.href = `${API_BASE}/login`;
+      return;
+    }
+    if (res.ok && api.status === 'success'){
+      alert('엑셀 저장 완료');
+    } else {
+      alert('저장 실패: ' + (txt || res.statusText));
+    }
+  } catch (e) {
+    alert('서버 전송 실패: ' + e.message);
+  } finally {
+    btn.disabled = false;
   }
-  if (res.ok && api.status === 'success'){
-    alert('엑셀 저장 완료');
-  } else {
-    alert('저장 실패: ' + (txt || res.statusText));
-  }
-} catch (e) {
-  alert('서버 전송 실패: ' + e.message);
-} finally {
-  btn.disabled = false;
-}
-}); // ← confirmBtn 클릭 핸들러 닫힘
+}); // confirmBtn 클릭 핸들러 닫힘
 </script>
 </body>
 </html>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
