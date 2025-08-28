@@ -9,16 +9,19 @@
   <style>
     :root { color-scheme: light dark; }
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Apple SD Gothic Neo,Noto Sans KR;margin:0;padding:16px;background:#fff;color:#111827}
-    header{font-weight:800;font-size:28px;margin:4px 0 16px}
-    .card{border:1px solid #e5e7eb;border-radius:16px;padding:16px}
+    header{font-weight:800;font-size:22px;margin:4px 0 12px}
+    .card{border:1px solid #e5e7eb;border-radius:12px;padding:16px}
     button{padding:12px 16px;border-radius:12px;border:0;background:#111827;color:#fff;font-weight:700}
-    video,canvas{width:100%;border:1px solid #e5e7eb;border-radius:12px;background:#000}
+    video,canvas{width:100%;border:1px solid #e5e7eb;border-radius:10px;background:#000}
     #preview,#snapshot{width:100%;aspect-ratio:16/7;object-fit:cover}
     .muted{opacity:.7}
     #hint{display:none!important}
-    #dot{position:fixed;width:18px;height:18px;border-radius:50%;border:2px solid #10b981;pointer-events:none;z-index:3;display:none;box-shadow:0 0 0 2px rgba(16,185,129,.2)}
-    .chip{display:inline-block;margin-top:8px;padding:6px 10px;border-radius:999px;border:1px solid #e5e7eb;font-size:12px;background:#ecfdf5;border-color:#10b981;color:#065f46;font-weight:700}
-    .chip.off{background:#f9fafb;border-color:#e5e7eb;color:#374151;font-weight:400}
+
+    /* 탭 십자표시(+) */
+    #tapCross{position:fixed;width:22px;height:22px;pointer-events:none;z-index:3;display:none}
+    #tapCross::before,#tapCross::after{content:"";position:absolute;background:#10b981}
+    #tapCross::before{left:10px;top:0;width:2px;height:22px;border-radius:1px}
+    #tapCross::after{left:0;top:10px;width:22px;height:2px;border-radius:1px}
   </style>
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 </head>
@@ -27,12 +30,11 @@
 
   <div class="card">
     <video id="preview" autoplay playsinline muted></video>
-    <div class="muted" style="font-size:12px;margin-top:8px">
-      노란 라벨에서 <b>대여자명 첫 글자</b> 위를 탭해 점을 찍은 뒤, <b>사진 촬영</b>을 누르세요.
+    <div class="muted" style="font-size:12px;margin-top:6px">
+      노란 라벨의 <b>대여자명 첫 글자</b> 위를 탭하면 <b>즉시 촬영</b>합니다.
     </div>
-    <div id="chip" class="chip off">이름 위치 미지정</div>
     <br/>
-    <button id="captureBtn" disabled>사진 촬영</button>
+    <button id="captureBtn">사진 촬영 (버튼)</button>
 
     <canvas id="snapshot" style="display:none;margin-top:12px;"></canvas>
 
@@ -50,10 +52,10 @@
     </div>
   </div>
 
-  <div id="dot"></div>
+  <div id="tapCross"></div>
 
 <script>
-const APP_VER  = "2025-08-28-single-anchor";
+const APP_VER  = "2025-08-28-tap-shoot-plus";
 const API_BASE = ""; // 같은 오리진
 
 /* SW 강제 최신화 */
@@ -88,15 +90,15 @@ fetchWithTimeout(`${API_BASE}/__ping`, {timeoutMs:5000}).catch(()=>{});
 const video   = document.getElementById('preview');
 const canvas  = document.getElementById('snapshot');
 const ctx     = canvas.getContext('2d', { willReadFrequently: true });
+
 const r_shipDate = document.getElementById('r_shipDate');
 const r_name     = document.getElementById('r_name');
 const r_phone    = document.getElementById('r_phone');
 const r_addr     = document.getElementById('r_addr');
 const r_model    = document.getElementById('r_model');
 const r_deviceId = document.getElementById('r_deviceId');
-const captureBtn = document.getElementById('captureBtn');
-const chip       = document.getElementById('chip');
-const dot        = document.getElementById('dot');
+
+const tapCross = document.getElementById('tapCross');
 
 let __stream = null;
 let ocrPreview = null;
@@ -187,7 +189,7 @@ function canvasToBlobResized(fromCanvas, cb) {
   }
 }
 
-/* 이름 한 점 탭 */
+/* 탭 → 십자(+) 표시 + 즉시 촬영 */
 function mapClickToVideoFrame(ev){
   const rect = video.getBoundingClientRect();
   const cx = ev.clientX - rect.left;
@@ -204,29 +206,26 @@ function mapClickToVideoFrame(ev){
   const ay = clamp(sy / vh, 0, 1);
   return { ax, ay, client:{x:ev.clientX, y:ev.clientY} };
 }
-function placeDot(pt){
-  dot.style.left = (pt.x-9) + 'px';
-  dot.style.top  = (pt.y-9) + 'px';
-  dot.style.display = 'block';
-  chip.classList.remove('off');
-  chip.textContent = "이름 위치 지정됨";
-  captureBtn.disabled = false;
+function showCross(pt){
+  tapCross.style.left = (pt.x-11) + 'px';
+  tapCross.style.top  = (pt.y-11) + 'px';
+  tapCross.style.display = 'block';
+  setTimeout(()=>{ tapCross.style.display='none'; }, 800);
 }
 video.addEventListener('click', (ev) => {
   const m = mapClickToVideoFrame(ev);
   anchorNorm = { x: m.ax, y: m.ay };
-  placeDot(m.client);
+  showCross(m.client);
+  doCapture(); // 탭 즉시 촬영
 });
 
-/* 초기 카메라 */
-initCamera();
-
-/* 촬영 */
+/* 버튼 촬영(앵커 없이 일반 촬영)도 유지 */
 document.getElementById('captureBtn').addEventListener('click', () => {
-  if (!anchorNorm) return alert('먼저 이름 위치를 탭해 주세요.');
+  if (!anchorNorm) alert('먼저 이름 첫 글자 위를 탭해 주세요.');
   doCapture();
 });
 
+/* 촬영 + OCR */
 function doCapture(){
   const w = video.videoWidth, h = video.videoHeight;
   if (!w || !h) return alert('카메라 초기화 대기 후 다시 시도');
@@ -236,21 +235,24 @@ function doCapture(){
   ctx.drawImage(video, 0, 0, w, h);
   canvas.style.display = 'block';
 
-  // OCR용 원본 (배지 없음)
+  // OCR용 원본(낙서/배지 없는 순수 프레임)
   const ocrCanvas = document.createElement('canvas');
   ocrCanvas.width = w; ocrCanvas.height = h;
   ocrCanvas.getContext('2d', { willReadFrequently: true }).drawImage(video, 0, 0, w, h);
 
   // QR → 배지
-  const { text:qr, loc } = scanQRFromCanvas();
+  const { text:qr, loc } = (function(){
+    try{
+      const img = ctx.getImageData(0,0,canvas.width,canvas.height);
+      const code = jsQR(img.data, img.width, img.height, { inversionAttempts:'attemptBoth' });
+      return code ? { text: code.data, loc: code.location } : { text:'', loc:null };
+    }catch{return {text:'', loc:null};}
+  })();
   const md = parseModelDevice(qr);
   const label = `${md.model} / ${md.deviceId}`;
-  let x = 16, y = 12;
-  if (loc && loc.topLeftCorner) {
-    x = Math.max(16, loc.topLeftCorner.x - 8);
-    y = Math.max(12, loc.topLeftCorner.y - 48);
-  }
-  drawBadge(label, x, y);
+  let bx = 16, by = 12;
+  if (loc && loc.topLeftCorner) { bx = Math.max(16, loc.topLeftCorner.x - 8); by = Math.max(12, loc.topLeftCorner.y - 48); }
+  drawBadge(label, bx, by);
 
   // 기본값 즉시 표시
   ocrPreview = {
@@ -266,20 +268,18 @@ function doCapture(){
   if (ocrRunning) return;
   ocrRunning = true;
 
-  // 서버로: 이미지 + 이름 앵커 하나만
+  // 서버로: 이미지 + 단일 앵커
   canvasToBlobResized(ocrCanvas, async (blob) => {
     const fd = new FormData();
     fd.append('image', blob, 'f.jpg');
     fd.append('qr_text', qr || '');
-    fd.append('anchor_x', String(anchorNorm.x));
-    fd.append('anchor_y', String(anchorNorm.y));
+    if (anchorNorm){
+      fd.append('anchor_x', String(anchorNorm.x));
+      fd.append('anchor_y', String(anchorNorm.y));
+    }
     try {
       const r = await fetchWithTimeout(`${API_BASE}/process-ocr/`, { method:'POST', body: fd, timeoutMs:45000 });
-      if (!r.ok) {
-        const msg = await r.text().catch(()=>r.statusText);
-        alert('인식 실패: ' + msg);
-        return;
-      }
+      if (!r.ok) { const msg = await r.text().catch(()=>r.statusText); alert('인식 실패: ' + msg); return; }
       const j = await r.json().catch(()=>null);
       if (!j || !j.data) { alert('인식 실패: 결과가 비어 있습니다.'); return; }
       const d = j.data;
@@ -335,4 +335,5 @@ document.getElementById('confirmBtn').addEventListener('click', async () => {
 </script>
 </body>
 </html>
+
 
