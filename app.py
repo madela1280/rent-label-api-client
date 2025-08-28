@@ -246,33 +246,47 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 @app.get("/", response_class=HTMLResponse)
 def root():
-    with open(os.path.join(BASE_DIR,"index.html"),"r",encoding="utf-8") as f:
+    with open(os.path.join(BASE_DIR, "index.html"), "r", encoding="utf-8") as f:
         return HTMLResponse(f.read(), media_type="text/html; charset=utf-8")
 
-@app.get("/__ping") 
-def ping(): return {"ping": str(uuid4())}
+@app.get("/__ping")
+def ping():
+    return {"ping": str(uuid4())}
 
 @app.get("/manifest.webmanifest", response_class=FileResponse)
-def manifest(): return FileResponse(os.path.join(BASE_DIR,"manifest.webmanifest"))
+def manifest():
+    return FileResponse(os.path.join(BASE_DIR, "manifest.webmanifest"))
 
 @app.get("/sw.js", response_class=FileResponse)
-def sw(): return FileResponse(os.path.join(BASE_DIR,"sw.js"))
+def sw():
+    return FileResponse(os.path.join(BASE_DIR, "sw.js"))
+
+# --- 추가된 아이콘 라우트 2개 ---
+@app.get("/icon-192.png", response_class=FileResponse)
+def icon_192():
+    return FileResponse(os.path.join(BASE_DIR, "icon-192.png"))
+
+@app.get("/icon-512.png", response_class=FileResponse)
+def icon_512():
+    return FileResponse(os.path.join(BASE_DIR, "icon-512.png"))
+# --------------------------------
 
 @app.get("/__version")
-def version(): return {"version":APP_VERSION}
+def version():
+    return {"version": APP_VERSION}
 
 @app.get("/__reset_tokens")
 def __reset_tokens():
-    for p in ("access_token.txt","refresh_token.txt"):
-        try: os.remove(p)
-        except: pass
-    return {"status":"ok"}
+    for p in ("access_token.txt", "refresh_token.txt"):
+        try:
+            os.remove(p)
+        except:
+            pass
+    return {"status": "ok"}
 
-if __name__=="__main__":
+if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT",10000)))
-
-
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 
 
