@@ -264,65 +264,38 @@ function doCapture(){
   if (ocrRunning) return;
   ocrRunning = true;
 
-  canvasToBlobResized(canvas, async (blob) => {
-    const fdPrev = new FormData();
-    fdPrev.append('image', blob, 'p.jpg');
-    fdPrev.append('qr_text', qr || '');
-    if (anchorNorm){
-      fdPrev.append('anchor_x', String(anchorNorm.x));
-      fdPrev.append('anchor_y', String(anchorNorm.y));
+ canvasToBlobResized(canvas, async (blob) => {
+  const fdFull = new FormData();
+  fdFull.append('image', blob, 'f.jpg');
+  fdFull.append('qr_text', qr || '');
+  if (anchorNorm){
+    fdFull.append('anchor_x', String(anchorNorm.x));
+    fdFull.append('anchor_y', String(anchorNorm.y));
+  }
+  try {
+    const r = await fetchWithTimeout(`${API_BASE}/process-ocr/`, { method:'POST', body: fdFull, timeoutMs:45000, retry:0 });
+    if (!r.ok) {
+      const msg = await r.text().catch(()=>r.statusText);
+      alert('인식 실패: ' + msg);
+      return;
     }
-
-    // 프리뷰: 서버로 앵커 좌표 전달
-    try {
-      const rPrev = await fetchWithTimeout(`${API_BASE}/preview-ocr`, { method:'POST', body: fdPrev, timeoutMs:25000, retry:0 });
-      if (rPrev.ok) {
-        const j = await rPrev.json().catch(()=>null);
-        if (j && j.data) {
-          const d = j.data;
-          ocrPreview = {
-            "출고일":  d['출고일']   || ocrPreview['출고일'],
-            "대여자명": d['대여자명'] || ocrPreview['대여자명'],
-            "전화번호": d['전화번호'] || ocrPreview['전화번호'],
-            "주소":     d['주소']     || ocrPreview['주소'],
-            "기기번호": ocrPreview['기기번호'],
-            "기종":     ocrPreview['기종'],
-          };
-          populatePanel(ocrPreview);
-        }
-      }
-    } catch {}
-
-    // 정식 OCR(앵커 포함)
-    const fdFull = new FormData();
-    fdFull.append('image', blob, 'f.jpg');
-    fdFull.append('qr_text', qr || '');
-    if (anchorNorm){
-      fdFull.append('anchor_x', String(anchorNorm.x));
-      fdFull.append('anchor_y', String(anchorNorm.y));
-    }
-    try {
-      const rFull = await fetchWithTimeout(`${API_BASE}/process-ocr/`, { method:'POST', body: fdFull, timeoutMs:45000, retry:0 });
-      if (rFull.ok) {
-        const j = await rFull.json().catch(()=>null);
-        const d = (j && j.data) || null;
-        if (d) {
-          ocrPreview = {
-            "출고일":  d['출고일']   || ocrPreview['출고일'],
-            "대여자명": d['대여자명'] || ocrPreview['대여자명'],
-            "전화번호": d['전화번호'] || ocrPreview['전화번호'],
-            "주소":     d['주소']     || ocrPreview['주소'],
-            "기기번호": ocrPreview['기기번호'],
-            "기종":     ocrPreview['기종'],
-          };
-          populatePanel(ocrPreview);
-        }
-      }
-    } catch {} finally {
-      ocrRunning = false;
-    }
-  });
-}
+    const j = await r.json().catch(()=>null);
+    if (!j || !j.data) { alert('인식 실패: 결과가 비어 있습니다.'); return; }
+    const d = j.data;
+    ocrPreview = {
+      ...ocrPreview,
+      "출고일":  d['출고일']   || ocrPreview['출고일'],
+      "대여자명": d['대여자명'] || "-",
+      "전화번호": d['전화번호'] || "-",
+      "주소":     d['주소']     || "-",
+    };
+    populatePanel(ocrPreview);
+  } catch(e){
+    alert('인식 네트워크 오류: ' + (e?.message || e));
+  } finally {
+    ocrRunning = false;
+  }
+});
 
 /* 확인(엑셀 저장 + 사진저장) */
 document.getElementById('confirmBtn').addEventListener('click', async () => {
