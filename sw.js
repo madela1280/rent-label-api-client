@@ -1,5 +1,5 @@
 // sw.js — 강제 최신화용 서비스워커
-const APP_VERSION = "2025-08-25-03";
+const APP_VERSION = "2025-08-25-04";
 const CACHE_NAME = "rent-label-cache-" + APP_VERSION;
 
 // 즉시 컨트롤
