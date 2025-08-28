@@ -200,25 +200,40 @@ async def callback(request: Request):
 
 # ------------------------------- OCR Routes -------------------------------
 @app.post("/preview-ocr")
-async def preview_ocr(qr_text: str = Form(""), image: UploadFile = File(...)):
+async def preview_ocr(
+    qr_text: str = Form(""),
+    anchor_x: float = Form(None),
+    anchor_y: float = Form(None),
+    image: UploadFile = File(...),
+):
     p = f"temp_{image.filename}"
-    with open(p,"wb") as f: shutil.copyfileobj(image.file,f)
+    with open(p, "wb") as f:
+        shutil.copyfileobj(image.file, f)
     try:
-        result = make_final_entry_fast(qr_text, p)
-        return {"status":"preview","data":result}
+        anchor = (anchor_x, anchor_y) if (anchor_x is not None and anchor_y is not None) else None
+        result = make_final_entry_fast(qr_text, p, anchor=anchor)
+        return {"status": "preview", "data": result}
     finally:
-        if os.path.exists(p): os.remove(p)
+        if os.path.exists(p):
+            os.remove(p)
 
 @app.post("/process-ocr/")
-async def process_ocr(qr_text: str = Form(""), image: UploadFile = File(...)):
+async def process_ocr(
+    qr_text: str = Form(""),
+    anchor_x: float = Form(None),
+    anchor_y: float = Form(None),
+    image: UploadFile = File(...),
+):
     p = f"temp_{image.filename}"
-    with open(p,"wb") as f: shutil.copyfileobj(image.file,f)
+    with open(p, "wb") as f:
+        shutil.copyfileobj(image.file, f)
     try:
-        result = make_final_entry(qr_text, p)
-        # 저장은 여기서 하지 않음(확인 버튼에서 저장)
-        return {"status":"ok","data":result}
+        anchor = (anchor_x, anchor_y) if (anchor_x is not None and anchor_y is not None) else None
+        result = make_final_entry(qr_text, p, anchor=anchor)
+        return {"status": "ok", "data": result}
     finally:
-        if os.path.exists(p): os.remove(p)
+        if os.path.exists(p):
+            os.remove(p)
 
 @app.post("/save-result")
 def save_result(data: Dict[str, Any] = Body(...)):
