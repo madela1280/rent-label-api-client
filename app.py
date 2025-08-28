@@ -12,7 +12,7 @@ from uuid import uuid4
 from ocr_utils import make_final_entry, make_final_entry_fast
 
 _HTTP = requests.Session()
-APP_VERSION = os.getenv("APP_VERSION", "2025-08-28-triple-anchor")
+APP_VERSION = os.getenv("APP_VERSION", "2025-08-28-single-anchor")
 
 # ------------------------------- FastAPI & Session -------------------------------
 app = FastAPI()
@@ -34,7 +34,7 @@ app.add_middleware(
 CLIENT_ID     = os.getenv("CLIENT_ID")
 TENANT_ID     = os.getenv("TENANT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-SCOPES = ["User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All"]
+SCOPES    = ["User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All"]
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 GRAPH     = "https://graph.microsoft.com/v1.0"
 
@@ -65,16 +65,14 @@ def _get_access_token(force_refresh: bool=False)->Optional[str]:
     if force_refresh and rtok:
         r = _build_msal_app().acquire_token_by_refresh_token(rtok, scopes=SCOPES)
         if "access_token" in r:
-            _save_tokens(r)
-            return r["access_token"]
+            _save_tokens(r); return r["access_token"]
     if rtok:
         r = _build_msal_app().acquire_token_by_refresh_token(rtok, scopes=SCOPES)
         if "access_token" in r:
-            _save_tokens(r)
-            return r["access_token"]
+            _save_tokens(r); return r["access_token"]
     return _load_access_token()
 
-# ------------------------------- Graph helpers -------------------------------
+# ------------------------------- Graph helpers (동일) -------------------------------
 _DRIVE_ITEM_ID: Optional[str] = None
 _SESSION_ID: Optional[str] = None
 
@@ -86,8 +84,7 @@ def _headers(token: str, with_session: bool=True) -> Dict[str,str]:
 
 def _get_drive_item_id(token: str) -> str:
     global _DRIVE_ITEM_ID
-    if _DRIVE_ITEM_ID:
-        return _DRIVE_ITEM_ID
+    if _DRIVE_ITEM_ID: return _DRIVE_ITEM_ID
     r = _HTTP.get(f"{GRAPH}/me/drive/root/search(q='{FILE_NAME}')?$top=1",
                   headers=_headers(token, with_session=False), timeout=30)
     r.raise_for_status()
@@ -99,8 +96,7 @@ def _get_drive_item_id(token: str) -> str:
 
 def _ensure_session(token: str) -> str:
     global _SESSION_ID
-    if _SESSION_ID:
-        return _SESSION_ID
+    if _SESSION_ID: return _SESSION_ID
     url = f"{GRAPH}/me/drive/items/{_get_drive_item_id(token)}/workbook/createSession"
     r = _HTTP.post(url, headers=_headers(token, with_session=False), json={"persist": True}, timeout=30)
     r.raise_for_status()
@@ -120,10 +116,8 @@ def _write_row_range(token: str, row: list) -> requests.Response:
     )
     used.raise_for_status()
     addr = used.json().get("address") or f"{SHEET_NAME}!A1:A1"
-    try:
-        last_row = int(addr.split("!")[1].split(":")[1][1:])
-    except Exception:
-        last_row = 1
+    try: last_row = int(addr.split("!")[1].split(":")[1][1:])
+    except Exception: last_row = 1
     next_row = last_row + 1
     target = f"A{next_row}:F{next_row}"
     url = f"{GRAPH}/me/drive/items/{_get_drive_item_id(token)}/workbook/worksheets('{SHEET_NAME}')/range(address='{target}')"
@@ -131,35 +125,28 @@ def _write_row_range(token: str, row: list) -> requests.Response:
 
 def write_row_to_onedrive(row: list, token: Optional[str]=None) -> (bool, Dict[str,Any]):
     tok = token or _get_access_token()
-    if not tok:
-        return False, {"error":"no_access_token"}
-
+    if not tok: return False, {"error":"no_access_token"}
     try:
         r = _write_row_table(tok, row)
-        if r.status_code in (200, 201):
-            return True, {"mode":"table","status":r.status_code}
-        if r.status_code in (404, 400):
+        if r.status_code in (200,201): return True, {"mode":"table","status":r.status_code}
+        if r.status_code in (404,400):
             r2 = _write_row_range(tok, row)
-            if r2.status_code == 200:
-                return True, {"mode":"range","status":200}
+            if r2.status_code == 200: return True, {"mode":"range","status":200}
             return False, {"error":"write_failed","status":r2.status_code,"text":r2.text}
-        if r.status_code == 401:
-            return False, {"error":"unauthorized","status":401,"text":r.text}
+        if r.status_code == 401: return False, {"error":"unauthorized","status":401,"text":r.text}
         return False, {"error":"write_failed","status":r.status_code,"text":r.text}
     except requests.HTTPError as e:
         st = getattr(e.response, "status_code", 0) if e.response else 0
-        if st == 401:
-            return False, {"error":"unauthorized","status":401,"text":str(e)}
+        if st == 401: return False, {"error":"unauthorized","status":401,"text":str(e)}
         return False, {"error":"exception","text":str(e)}
     except Exception as e:
         return False, {"error":"exception","text":str(e)}
 
-# ------------------------------- Auth Routes -------------------------------
+# ------------------------------- Auth Routes (동일) -------------------------------
 def _redirect_uri(request: Request) -> str:
-    uri = str(request.url_for("callback"))
-    if uri.startswith("http://"):
-        uri = "https://" + uri[len("http://"):]
-    return uri
+  uri = str(request.url_for("callback"))
+  if uri.startswith("http://"): uri = "https://" + uri[len("http://"):]
+  return uri
 
 @app.get("/login")
 def login(request: Request):
@@ -177,57 +164,58 @@ async def callback(request: Request):
     code = request.query_params.get("code")
     if not code:
         return JSONResponse({"error":"Authorization code missing"}, status_code=400)
-
     result = _build_msal_app().acquire_token_by_authorization_code(
         code, scopes=SCOPES, redirect_uri=_redirect_uri(request)
     )
     if "access_token" not in result:
         return JSONResponse({"error":"Token acquire failed","details":result}, status_code=400)
-
     _save_tokens(result)
     request.session["tokens"] = {"access_token": result["access_token"]}
     return RedirectResponse("/")
 
-# ------------------------------- OCR Routes -------------------------------
+# ------------------------------- OCR Routes (단일 앵커 우선) -------------------------------
+def _pack_anchor(anchor_x, anchor_y, name_x, name_y, phone_x, phone_y, addr_x, addr_y):
+    # 단일(anchor_x,y) 있으면 그걸 사용. (과거 3점 파라미터와 호환)
+    if anchor_x is not None and anchor_y is not None:
+        return (float(anchor_x), float(anchor_y))
+    # 호환용: name_x/name_y가 오면 그걸 대표로 씀
+    if name_x is not None and name_y is not None:
+        return (float(name_x), float(name_y))
+    return None
+
 @app.post("/preview-ocr")
 async def preview_ocr(
     qr_text: str = Form(""),
-    name_x: float = Form(None), name_y: float = Form(None),
+    anchor_x: float = Form(None), anchor_y: float = Form(None),
+    name_x: float = Form(None),  name_y: float = Form(None),
     phone_x: float = Form(None), phone_y: float = Form(None),
-    addr_x: float = Form(None), addr_y: float = Form(None),
+    addr_x: float = Form(None),  addr_y: float = Form(None),
     image: UploadFile = File(...),
 ):
     p = f"temp_{image.filename}"
-    with open(p, "wb") as f:
-        shutil.copyfileobj(image.file, f)
+    with open(p,"wb") as f: shutil.copyfileobj(image.file,f)
     try:
-        anchors = {}
-        if name_x is not None and name_y is not None:   anchors["name"]  = (name_x, name_y)
-        if phone_x is not None and phone_y is not None: anchors["phone"] = (phone_x, phone_y)
-        if addr_x is not None and addr_y is not None:   anchors["addr"]  = (addr_x, addr_y)
-        result = make_final_entry_fast(qr_text, p, anchors=anchors or None)
-        return {"status": "preview", "data": result}
+        anchor = _pack_anchor(anchor_x, anchor_y, name_x, name_y, phone_x, phone_y, addr_x, addr_y)
+        result = make_final_entry_fast(qr_text, p, anchor=anchor)
+        return {"status":"preview","data":result}
     finally:
         if os.path.exists(p): os.remove(p)
 
 @app.post("/process-ocr/")
 async def process_ocr(
     qr_text: str = Form(""),
-    name_x: float = Form(None), name_y: float = Form(None),
+    anchor_x: float = Form(None), anchor_y: float = Form(None),
+    name_x: float = Form(None),  name_y: float = Form(None),
     phone_x: float = Form(None), phone_y: float = Form(None),
-    addr_x: float = Form(None), addr_y: float = Form(None),
+    addr_x: float = Form(None),  addr_y: float = Form(None),
     image: UploadFile = File(...),
 ):
     p = f"temp_{image.filename}"
-    with open(p, "wb") as f:
-        shutil.copyfileobj(image.file, f)
+    with open(p,"wb") as f: shutil.copyfileobj(image.file,f)
     try:
-        anchors = {}
-        if name_x is not None and name_y is not None:   anchors["name"]  = (name_x, name_y)
-        if phone_x is not None and phone_y is not None: anchors["phone"] = (phone_x, phone_y)
-        if addr_x is not None and addr_y is not None:   anchors["addr"]  = (addr_x, addr_y)
-        result = make_final_entry(qr_text, p, anchors=anchors or None)
-        return {"status": "ok", "data": result}
+        anchor = _pack_anchor(anchor_x, anchor_y, name_x, name_y, phone_x, phone_y, addr_x, addr_y)
+        result = make_final_entry(qr_text, p, anchor=anchor)
+        return {"status":"ok","data":result}
     finally:
         if os.path.exists(p): os.remove(p)
 
@@ -242,21 +230,15 @@ def save_result(data: Dict[str, Any] = Body(...)):
         data.get("기종",""),
     ]
     token = _get_access_token()
-    if not token:
-        return JSONResponse({"status":"write_failed","write_error":{"error":"no_access_token"}}, status_code=401)
-
+    if not token: return JSONResponse({"status":"write_failed","write_error":{"error":"no_access_token"}}, status_code=401)
     ok, info = write_row_to_onedrive(row, token=token)
-    if ok:
-        return {"status":"success","write_info":info}
-
-    if info.get("error") in ("unauthorized",) or info.get("status") == 401:
+    if ok: return {"status":"success","write_info":info}
+    if info.get("error") in ("unauthorized",) or info.get("status")==401:
         token2 = _get_access_token(force_refresh=True)
-        if not token2:
-            return JSONResponse({"status":"write_failed","write_error":{"error":"no_access_token"}}, status_code=401)
+        if not token2: return JSONResponse({"status":"write_failed","write_error":{"error":"no_access_token"}}, status_code=401)
         ok2, info2 = write_row_to_onedrive(row, token=token2)
         if ok2: return {"status":"success","write_info":info2}
         return JSONResponse({"status":"write_failed","write_error":info2}, status_code=500)
-
     return JSONResponse({"status":"write_failed","write_error":info}, status_code=500)
 
 # ------------------------------- Static / Misc -------------------------------
@@ -289,6 +271,7 @@ def __reset_tokens():
 if __name__=="__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT",10000)))
+
 
 
 

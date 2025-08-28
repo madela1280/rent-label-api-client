@@ -1,4 +1,4 @@
-# ocr_utils.py — 삼점 앵커(이름/전화/주소) 정확도 강화판
+# ocr_utils.py — 단일 앵커(이름) 기준 추출 고정판
 import os, re
 from datetime import date
 from typing import List, Tuple, Dict, Any, Optional
@@ -6,8 +6,7 @@ from PIL import Image, ImageOps, ImageFilter
 import pytesseract
 
 try:
-    import cv2
-    import numpy as np
+    import cv2, numpy as np
     HAS_CV2 = True
 except Exception:
     HAS_CV2 = False
@@ -18,7 +17,7 @@ pytesseract.pytesseract.tesseract_cmd = os.getenv(
     pytesseract.pytesseract.tesseract_cmd
 )
 
-# ---------------- 공통 유틸 ----------------
+# ---------- 공통 ----------
 def _resize(img: Image.Image, max_w:int) -> Image.Image:
     w,h = img.size
     if w > max_w:
@@ -36,10 +35,8 @@ def _preprocess(img: Image.Image, strong: bool=False) -> Image.Image:
         g = g.filter(ImageFilter.UnsharpMask(radius=1.0, percent=160, threshold=3))
     return g
 
-def _clean(s:str)->str:
-    return re.sub(r"[|\[\]{}<>]+"," ", s or "").strip()
-
 def _clamp(v,a,b): return max(a, min(b, v))
+def _clean(s:str)->str: return re.sub(r"[|\[\]{}<>]+"," ", s or "").strip()
 
 # 전화 규칙
 R_PHONE_010 = re.compile(r"(010)[-\s\.]?(\d{3,4})[-\s\.]?(\d{4}|\*{4})")
@@ -47,72 +44,35 @@ R_PHONE_05  = re.compile(r"(05\d{2})[-\s\.]?(\d{3,4})[-\s\.]?(\d{4})")
 BANNED_PHONES = {"010-7394-3535"}
 
 LABEL_NAME = re.compile(r"^(받는.?|수령인|수취인|이름)\s*[:：]?\s*", re.I)
-LABEL_ADDR = re.compile(r"^(주소|배달지|배송지)\s*[:：]?\s*", re.I)
-STOP_WORDS_FOR_NAME = {
-    "주소","아파트","수령","수취","받는","전화","연락처","기종","기기번호",
-    "심포니","락티나","스윙","스윙맥스","프리스타일","각시밀","시밀레"
-}
-
-def _normalize_for_ban(phone_text: str) -> str:
-    t = re.sub(r"[^\d\*]", "", phone_text)
-    if t.startswith("010") and len(t) >= 7:
-        mid = t[3:-4]; last = t[-4:]
-        return f"010-{mid}-{last}"
-    if t.startswith("05") and len(t) >= 10:
-        head = t[:4]; rest = t[4:]
-        if len(rest)==7: return f"{head}-{rest[:3]}-{rest[3:]}"
-        if len(rest)==8: return f"{head}-{rest[:4]}-{rest[4:]}"
-    return phone_text
+STOP_WORDS = {"주소","아파트","전화","연락처","기종","기기번호","심포니","락티나","스윙","스윙맥스","프리스타일","각시밀","시밀레"}
 
 def _address_prefix(s: str) -> str:
-    s2 = LABEL_ADDR.sub("", s or "").strip()
-    if not s2: return ""
-    s2 = re.split(r"[(),;]", s2)[0].strip()
-    s2 = re.sub(r"\s+", " ", s2).strip()
-    s2 = (s2.replace("서울특별시","서울").replace("부산광역시","부산").replace("대구광역시","대구")
-              .replace("인천광역시","인천").replace("광주광역시","광주").replace("대전광역시","대전")
-              .replace("울산광역시","울산").replace("세종특별자치시","세종"))
-    return s2
+    s = (s or "").strip()
+    s = re.sub(r"\s+", " ", s)
+    # 전화 제거
+    s = R_PHONE_010.sub("", s)
+    s = R_PHONE_05.sub("", s)
+    # (,) ; 뒤쪽 날림
+    s = re.split(r"[();]", s)[0].strip()
+    return s[:30]  # 앞부분만
 
-def _tess_data(img: Image.Image, psm:int=6, lang:str="kor") -> List[Dict[str, Any]]:
+def _tess_line(img: Image.Image, lang:str, allowlist:str=None) -> str:
+    cfg = "--oem 3 --psm 7"
+    if allowlist:
+        cfg += f" -c tessedit_char_whitelist={allowlist}"
     try:
-        d = pytesseract.image_to_data(img, config=f"--oem 3 --psm {psm}", lang=lang, output_type=pytesseract.Output.DICT)
+        return pytesseract.image_to_string(img, config=cfg, lang=lang)
     except Exception:
-        return []
-    n = len(d.get("text", []))
-    out = []
-    for i in range(n):
-        txt = (d["text"][i] or "").strip()
-        if not txt: continue
-        try: conf = float(d["conf"][i])
-        except: conf = -1.0
-        out.append({
-            "text": txt,
-            "left": int(d["left"][i]), "top": int(d["top"][i]),
-            "width": int(d["width"][i]), "height": int(d["height"][i]),
-            "conf": conf,
-            "line_id": (int(d["block_num"][i]), int(d["par_num"][i]), int(d["line_num"][i])),
-        })
-    return out
+        return ""
 
-def _group_lines(words: List[Dict[str, Any]]):
-    lines: Dict[Tuple[int,int,int], List[Dict[str, Any]]] = {}
-    for w in words:
-        lines.setdefault(w["line_id"], []).append(w)
-    for k in lines:
-        lines[k].sort(key=lambda x: x["left"])
-    return lines
-
-# ---------------- 노란 박스 탐지 ----------------
+# ---------- 노란 영역 ----------
 def _find_yellow_block(pil_img: Image.Image) -> Optional[Tuple[int,int,int,int]]:
     if not HAS_CV2: return None
     bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     lower1 = np.array([15,  60, 120], np.uint8)
-    upper1 = np.array([30, 255, 255], np.uint8)
-    lower2 = np.array([30,  60, 120], np.uint8)
-    upper2 = np.array([40, 255, 255], np.uint8)
-    mask = cv2.inRange(hsv, lower1, upper1) | cv2.inRange(hsv, lower2, upper2)
+    upper1 = np.array([40, 255, 255], np.uint8)
+    mask = cv2.inRange(hsv, lower1, upper1)
     if cv2.countNonZero(mask) < (pil_img.width * pil_img.height) * 0.003:
         return None
     kernel = np.ones((5,5), np.uint8)
@@ -125,109 +85,69 @@ def _find_yellow_block(pil_img: Image.Image) -> Optional[Tuple[int,int,int,int]]
         return None
     return (x,y,w,h)
 
-# ---------------- 추출 로직 ----------------
-def _extract_from_yellow(yimg: Image.Image, anchors_rel: Optional[Dict[str,float]]) -> Tuple[str, str, str]:
-    """anchors_rel: {'name': y(0..1), 'phone': y(0..1), 'addr': y(0..1)} — yimg 좌표계 기준"""
+# ---------- ROI 만들기 ----------
+def _roi_from_anchor(yimg: Image.Image, anchor_rel_y: float) -> Dict[str, Image.Image]:
+    """이름: 왼쪽 0~45%, 전화: 오른쪽 55~100%, 주소: 이름줄 바로 다음줄"""
     W,H = yimg.size
-    words = _tess_data(_preprocess(yimg, False), psm=6)
-    if not words:
-        words = _tess_data(_preprocess(yimg, True), psm=6)
-        if not words: return "", "", ""
+    y = _clamp(int(anchor_rel_y * H), 0, H-1)
 
-    lines = _group_lines(words)
-    keys = sorted(lines.keys(), key=lambda k: (k[0],k[1],k[2]))
+    # 라인 높이 추정(대략)
+    line_h = max(18, int(H * 0.035))
 
-    meta = []
-    for k in keys:
-        ws = lines[k]
-        y_top = min(w["top"] for w in ws)
-        y_bot = max(w["top"]+w["height"] for w in ws)
-        left_words  = [w for w in ws if (w["left"] + w["width"]/2) <= W*0.45]
-        right_words = [w for w in ws if (w["left"] + w["width"]/2) >= W*0.55]
-        meta.append({
-            "yt":y_top, "yb":y_bot,
-            "full":" ".join(w["text"] for w in ws).strip(),
-            "left":" ".join(w["text"] for w in left_words).strip(),
-            "right":" ".join(w["text"] for w in right_words).strip(),
-            "left_words": left_words,
-        })
+    # 이름 줄
+    y1 = _clamp(y - int(line_h*0.6), 0, H-1)
+    y2 = _clamp(y + int(line_h*0.6), 0, H)
+    name_box  = (0, y1, int(W*0.45), y2)
+    phone_box = (int(W*0.55), y1, W, y2)
 
-    def _pick_line_by_y(y_norm: float, require_left=False) -> int:
-        target = _clamp(y_norm,0.0,1.0) * H
-        best_i, best_d = -1, 10**9
-        for i,m in enumerate(meta):
-            if require_left and not m["left"]: continue
-            yc = (m["yt"]+m["yb"])/2.0
-            d = abs(yc - target)
-            if d < best_d:
-                best_d, best_i = d, i
-        return best_i
+    # 주소 줄(이름 아래쪽 한 줄)
+    ya = _clamp(y + int(line_h*1.2), 0, H-1)
+    yb = _clamp(ya + int(line_h*1.2), 0, H)
+    addr_box  = (0, ya, W, yb)
 
-    name, addr, phone = "", "", ""
-    name_idx = -1
+    return {
+        "name":  yimg.crop(name_box),
+        "phone": yimg.crop(phone_box),
+        "addr":  yimg.crop(addr_box),
+    }
 
-    # 1) 이름: name 앵커 우선(왼쪽 컬럼), 금지어 제외
-    if anchors_rel and "name" in anchors_rel:
-        cand_i = _pick_line_by_y(anchors_rel["name"], require_left=True)
-        if cand_i >= 0:
-            left_norm = LABEL_NAME.sub("", _clean(meta[cand_i]["left"]))
-            toks = re.findall(r"[가-힣]{2,4}", left_norm)
-            toks = [t for t in toks if t not in STOP_WORDS_FOR_NAME]
-            if toks:
-                name = toks[0]; name_idx = cand_i
+# ---------- 추출 ----------
+def _extract_with_anchor(yimg: Image.Image, anchor_rel_y: Optional[float]) -> Tuple[str,str,str]:
+    if yimg is None: return "", "", ""
+    if anchor_rel_y is None: return "", "", ""
 
-    # 보조: 앵커가 없거나 실패 시, 왼쪽 컬럼에서 위쪽부터 합리적인 후보
-    if not name:
-        for i,m in enumerate(meta):
-            if not m["left"]: continue
-            left_norm = LABEL_NAME.sub("", _clean(m["left"]))
-            toks = re.findall(r"[가-힣]{2,4}", left_norm)
-            toks = [t for t in toks if t not in STOP_WORDS_FOR_NAME]
-            if toks:
-                name = toks[0]; name_idx = i; break
+    rois = _roi_from_anchor(yimg, anchor_rel_y)
 
-    # 2) 주소: 이름 라인의 '다음 줄' 우선 → 없으면 addr 앵커 근처
-    def _is_addrish(t:str)->bool:
-        return any(tok in t for tok in ("시","도","군","구","읍","면","동","리","로","길","번길","아파트","호")) or bool(re.search(r"\d", t))
-    if name_idx >= 0 and name_idx+1 < len(meta):
-        cand = _clean(meta[name_idx+1]["full"])
-        if name and cand.startswith(name): cand = cand[len(name):].strip()
-        cand = R_PHONE_010.sub("", cand); cand = R_PHONE_05.sub("", cand)
-        if _is_addrish(cand): addr = _address_prefix(cand)
+    # 이름: 한글 2~4자, 금지어 제외
+    name_raw = _tess_line(_preprocess(rois["name"], False), "kor")
+    if len(re.sub(r"\s+","",name_raw)) < 2:
+        name_raw = _tess_line(_preprocess(rois["name"], True), "kor")
+    name_tokens = re.findall(r"[가-힣]{2,4}", LABEL_NAME.sub("", name_raw))
+    name_tokens = [t for t in name_tokens if t not in STOP_WORDS]
+    name = name_tokens[0] if name_tokens else ""
 
-    if not addr and anchors_rel and "addr" in anchors_rel:
-        i2 = _pick_line_by_y(anchors_rel["addr"])
-        if i2 >= 0:
-            cand = _clean(meta[i2]["full"])
-            cand = R_PHONE_010.sub("", cand); cand = R_PHONE_05.sub("", cand)
-            if _is_addrish(cand): addr = _address_prefix(cand)
-
-    # 3) 전화: phone 앵커 줄의 오른쪽 컬럼 우선 → 없으면 전체 검색
-    def _search_phone_line(i: int) -> Optional[str]:
-        raw = meta[i]["right"] or meta[i]["full"]
-        m1 = R_PHONE_010.search(raw)
-        if m1:
-            norm = _normalize_for_ban(m1.group(0))
-            if norm not in BANNED_PHONES: return m1.group(0)
-        m2 = R_PHONE_05.search(raw)
-        if m2: return m2.group(0)
-        return None
-
-    if anchors_rel and "phone" in anchors_rel:
-        pi = _pick_line_by_y(anchors_rel["phone"])
-        if pi >= 0:
-            ph = _search_phone_line(pi)
-            if ph: phone = ph
-
+    # 전화: 오른쪽, allowlist
+    phone_raw = _tess_line(_preprocess(rois["phone"], False), "eng", allowlist="0123456789-*")
+    if len(re.sub(r"\s+","",phone_raw)) < 5:
+        phone_raw = _tess_line(_preprocess(rois["phone"], True), "eng", allowlist="0123456789-*")
+    phone = ""
+    m1 = R_PHONE_010.search(phone_raw)
+    if m1:
+        phone = m1.group(0)
+        if phone == "010-7394-3535": phone = ""
     if not phone:
-        # 전체에서 첫 일치
-        for i in range(len(meta)):
-            ph = _search_phone_line(i)
-            if ph: phone = ph; break
+        m2 = R_PHONE_05.search(phone_raw)
+        if m2: phone = m2.group(0)
 
-    return _address_prefix(addr) if addr else "", name or "", phone or ""
+    # 주소: 다음 줄, 앞쪽만
+    addr_raw = _tess_line(_preprocess(rois["addr"], False), "kor")
+    if len(re.sub(r"\s+","",addr_raw)) < 4:
+        addr_raw = _tess_line(_preprocess(rois["addr"], True), "kor")
+    addr = _address_prefix(addr_raw)
 
-# ---------------- QR → 기종/기기번호 ----------------
+    return addr, name, phone
+
+# ---------- QR → 모델/기기 ----------
 def _map_model_device(qr_text:str)->Tuple[str,str]:
     raw = (qr_text or "").strip()
     u = re.sub(r"[^A-Z0-9]", "", raw.upper())
@@ -249,38 +169,38 @@ def _final(qr_text:str, address:str, name:str, phone:str)->Dict[str,str]:
       "기종": model,
     }
 
-# ---------------- 앵커 변환 & 엔트리 ----------------
-def _yellow_and_anchors(im: Image.Image, anchors: Optional[Dict[str,Tuple[float,float]]]):
+# ---------- 외부 API ----------
+def _yellow_and_rel(im: Image.Image, anchor: Optional[Tuple[float,float]]):
     bbox = _find_yellow_block(im)
-    if not bbox:
-        return im, None
+    if not bbox: return im, None
     x,y,w,h = bbox
     yimg = im.crop((x,y,x+w,y+h))
-    rel = {}
-    if anchors:
-        for k,(ax,ay) in anchors.items():
-            px = _clamp(int(ax * im.size[0]), 0, im.size[0]-1)
-            py = _clamp(int(ay * im.size[1]), 0, im.size[1]-1)
-            if x <= px <= x+w and y <= py <= y+h:
-                rel[k] = (py - y) / float(h)
-    return yimg, rel if rel else None
+    rel_y = None
+    if anchor:
+        ax, ay = anchor
+        px = _clamp(int(ax * im.size[0]), 0, im.size[0]-1)
+        py = _clamp(int(ay * im.size[1]), 0, im.size[1]-1)
+        if x <= px <= x+w and y <= py <= y+h:
+            rel_y = (py - y) / float(h)
+    return yimg, rel_y
 
-def make_final_entry_fast(qr_text:str, img_path:str, anchors: Optional[Dict[str,Tuple[float,float]]]=None)->Dict[str,str]:
+def make_final_entry_fast(qr_text:str, img_path:str, anchor: Optional[Tuple[float,float]]=None)->Dict[str,str]:
     im = Image.open(img_path)
     im = _resize(im, 2000)
-    yimg, rel = _yellow_and_anchors(im, anchors)
-    address, name, phone = _extract_from_yellow(yimg, {k:v for k,v in (rel or {}).items()})
-    return _final(qr_text, address, name, phone)
+    yimg, rel_y = _yellow_and_rel(im, anchor)
+    addr, name, phone = _extract_with_anchor(yimg, rel_y)
+    return _final(qr_text, addr, name, phone)
 
-def make_final_entry(qr_text:str, img_path:str, anchors: Optional[Dict[str,Tuple[float,float]]]=None)->Dict[str,str]:
+def make_final_entry(qr_text:str, img_path:str, anchor: Optional[Tuple[float,float]]=None)->Dict[str,str]:
     im = Image.open(img_path)
     im = _resize(im, 2400)
-    yimg, rel = _yellow_and_anchors(im, anchors)
-    address, name, phone = _extract_from_yellow(yimg, {k:v for k,v in (rel or {}).items()})
-    if not (address and name and phone):
-        address2, name2, phone2 = _extract_from_yellow(_preprocess(yimg, True), {k:v for k,v in (rel or {}).items()})
-        address = address or address2
-        name    = name or name2
-        phone   = phone or phone2
-    return _final(qr_text, address, name, phone)
+    yimg, rel_y = _yellow_and_rel(im, anchor)
+    addr, name, phone = _extract_with_anchor(yimg, rel_y)
+    if not (addr and name and phone):
+        addr2, name2, phone2 = _extract_with_anchor(_preprocess(yimg, True) if yimg else None, rel_y)
+        addr = addr or addr2
+        name = name or name2
+        phone = phone or phone2
+    return _final(qr_text, addr, name, phone)
+
 
