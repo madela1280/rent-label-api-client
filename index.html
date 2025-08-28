@@ -16,7 +16,6 @@
     #preview,#snapshot{width:100%;aspect-ratio:16/7;object-fit:cover}
     .muted{opacity:.7}
     #hint{display:none!important}
-
     /* 탭 십자표시(+) */
     #tapCross{position:fixed;width:22px;height:22px;pointer-events:none;z-index:3;display:none}
     #tapCross::before,#tapCross::after{content:"";position:absolute;background:#10b981}
@@ -31,10 +30,8 @@
   <div class="card">
     <video id="preview" autoplay playsinline muted></video>
     <div class="muted" style="font-size:12px;margin-top:6px">
-      노란 라벨의 <b>대여자명 첫 글자</b> 위를 탭하면 <b>즉시 촬영</b>합니다.
+      노란 라벨의 <b>대여자명 첫 글자</b> 위를 <b>탭하면 즉시 촬영</b>합니다.
     </div>
-    <br/>
-    <button id="captureBtn">사진 촬영 (버튼)</button>
 
     <canvas id="snapshot" style="display:none;margin-top:12px;"></canvas>
 
@@ -55,7 +52,7 @@
   <div id="tapCross"></div>
 
 <script>
-const APP_VER  = "2025-08-28-tap-shoot-plus";
+const APP_VER  = "2025-08-28-tap-plus-no-button";
 const API_BASE = ""; // 같은 오리진
 
 /* SW 강제 최신화 */
@@ -90,15 +87,13 @@ fetchWithTimeout(`${API_BASE}/__ping`, {timeoutMs:5000}).catch(()=>{});
 const video   = document.getElementById('preview');
 const canvas  = document.getElementById('snapshot');
 const ctx     = canvas.getContext('2d', { willReadFrequently: true });
-
 const r_shipDate = document.getElementById('r_shipDate');
 const r_name     = document.getElementById('r_name');
 const r_phone    = document.getElementById('r_phone');
 const r_addr     = document.getElementById('r_addr');
 const r_model    = document.getElementById('r_model');
 const r_deviceId = document.getElementById('r_deviceId');
-
-const tapCross = document.getElementById('tapCross');
+const tapCross   = document.getElementById('tapCross');
 
 let __stream = null;
 let ocrPreview = null;
@@ -112,10 +107,7 @@ async function stopCamera(){
       video.srcObject.getTracks().forEach(t=>t.stop());
       video.srcObject = null;
     }
-    if (__stream) {
-      __stream.getTracks().forEach(t=>t.stop());
-      __stream = null;
-    }
+    if (__stream) { __stream.getTracks().forEach(t=>t.stop()); __stream = null; }
   } catch {}
 }
 async function initCamera(){
@@ -155,9 +147,9 @@ function populatePanel(d){
   r_model.textContent    = d['기종']     || '-';
   r_deviceId.textContent = d['기기번호'] || '-';
 }
-function scanQRFromCanvas() {
+function scanQRFromContext(c){
   try {
-    const img = ctx.getImageData(0,0,canvas.width,canvas.height);
+    const img = c.getImageData(0,0,canvas.width,canvas.height);
     const code = jsQR(img.data, img.width, img.height, { inversionAttempts:'attemptBoth' });
     return code ? { text: code.data, loc: code.location } : { text:'', loc:null };
   } catch { return { text:'', loc:null }; }
@@ -219,12 +211,6 @@ video.addEventListener('click', (ev) => {
   doCapture(); // 탭 즉시 촬영
 });
 
-/* 버튼 촬영(앵커 없이 일반 촬영)도 유지 */
-document.getElementById('captureBtn').addEventListener('click', () => {
-  if (!anchorNorm) alert('먼저 이름 첫 글자 위를 탭해 주세요.');
-  doCapture();
-});
-
 /* 촬영 + OCR */
 function doCapture(){
   const w = video.videoWidth, h = video.videoHeight;
@@ -235,19 +221,14 @@ function doCapture(){
   ctx.drawImage(video, 0, 0, w, h);
   canvas.style.display = 'block';
 
-  // OCR용 원본(낙서/배지 없는 순수 프레임)
+  // OCR용 원본(덧그림 없는 프레임)
   const ocrCanvas = document.createElement('canvas');
   ocrCanvas.width = w; ocrCanvas.height = h;
-  ocrCanvas.getContext('2d', { willReadFrequently: true }).drawImage(video, 0, 0, w, h);
+  const octx = ocrCanvas.getContext('2d', { willReadFrequently: true });
+  octx.drawImage(video, 0, 0, w, h);
 
-  // QR → 배지
-  const { text:qr, loc } = (function(){
-    try{
-      const img = ctx.getImageData(0,0,canvas.width,canvas.height);
-      const code = jsQR(img.data, img.width, img.height, { inversionAttempts:'attemptBoth' });
-      return code ? { text: code.data, loc: code.location } : { text:'', loc:null };
-    }catch{return {text:'', loc:null};}
-  })();
+  // QR → 배지 (미리보기 캔버스에만 그리기)
+  const { text:qr, loc } = scanQRFromContext(ctx);
   const md = parseModelDevice(qr);
   const label = `${md.model} / ${md.deviceId}`;
   let bx = 16, by = 12;
@@ -335,5 +316,6 @@ document.getElementById('confirmBtn').addEventListener('click', async () => {
 </script>
 </body>
 </html>
+
 
 

@@ -1,4 +1,4 @@
-# ocr_utils.py — 단일 앵커(이름 첫 글자) 기준: 이름≤5자, 같은 줄 오른쪽=전화, 다음 줄=주소
+# ocr_utils.py — 단일 앵커(이름 첫 글자) 기준: 이름≤4자, 같은 줄 첫 숫자=전화, 다음 줄=주소
 import os, re
 from datetime import date
 from typing import Tuple, Dict, Optional
@@ -37,9 +37,10 @@ def _preprocess(img: Image.Image, strong: bool=False) -> Image.Image:
 
 def _clamp(v,a,b): return max(a, min(b, v))
 
-# 전화 규칙 (+ 금지번호 유지)
+# 전화 규칙 (요구사항 유지)
 R_PHONE_010 = re.compile(r"(010)[-\s\.]?(\d{4})[-\s\.]?(\d{4}|\*{4})")
-R_PHONE_05  = re.compile(r"(05\d{2})[-\s\.]?(\d{3,4})[-\s\.]?(\d{4})")
+R_PHONE_05A = re.compile(r"(05\d{2})[-\s\.]?(\d{3})[-\s\.]?(\d{4})")
+R_PHONE_05B = re.compile(r"(05\d{2})[-\s\.]?(\d{4})[-\s\.]?(\d{4})")
 BANNED_PHONES = {"010-7394-3535"}
 
 LABEL_NAME = re.compile(r"^(받는.?|수령인|수취인|이름)\s*[:：]?\s*", re.I)
@@ -58,12 +59,13 @@ def _address_prefix(s: str, n:int=30) -> str:
     s = (s or "").strip()
     s = re.sub(r"\s+", " ", s)
     s = R_PHONE_010.sub("", s)
-    s = R_PHONE_05.sub("", s)
+    s = R_PHONE_05A.sub("", s)
+    s = R_PHONE_05B.sub("", s)
     s = re.split(r"[();]", s)[0].strip()
     return s[:n]
 
 # -------- 노란 영역 찾기 --------
-def _find_yellow_block(pil_img: Image.Image) -> Optional[Tuple[int,int,int,int]]:
+def _find_yellow_block(pil_img: Image.Image):
     if not HAS_CV2: return None
     bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
@@ -83,7 +85,7 @@ def _find_yellow_block(pil_img: Image.Image) -> Optional[Tuple[int,int,int,int]]
     return (x,y,w,h)
 
 # -------- ROI(앵커 x,y) --------
-def _rois_from_anchor(img: Image.Image, ax: float, ay: float) -> Tuple[Image.Image, Image.Image, Image.Image]:
+def _rois_from_anchor(img: Image.Image, ax: float, ay: float):
     W,H = img.size
     px = _clamp(int(ax * W), 0, W-1)
     py = _clamp(int(ay * H), 0, H-1)
@@ -91,16 +93,16 @@ def _rois_from_anchor(img: Image.Image, ax: float, ay: float) -> Tuple[Image.Ima
     # 한 줄 높이 추정
     line_h = max(18, int(H * 0.035))
 
-    # 이름: 앵커 x부터 오른쪽으로 name_w만 (최대 5자만 필요)
-    name_w = _clamp(int(W * 0.18), 160, 420)
-    x1 = _clamp(px - 8, 0, W-1)
+    # 이름: 앵커 x부터 오른쪽으로 name_w만 (최대 4자만 필요)
+    name_w = _clamp(int(W * 0.16), 140, 360)
+    x1 = _clamp(px - 6, 0, W-1)
     x2 = _clamp(px + name_w, 0, W)
     y1 = _clamp(py - int(line_h*0.6), 0, H-1)
     y2 = _clamp(py + int(line_h*0.6), 0, H)
     name_roi = img.crop((x1, y1, x2, y2))
 
-    # 전화: 같은 줄, 이름 ROI 오른쪽부터 끝까지
-    phone_roi = img.crop((_clamp(x2 + 10, 0, W-1), y1, W, y2))
+    # 전화: 같은 줄, 이름 ROI의 오른쪽부터 끝까지
+    phone_roi = img.crop((_clamp(x2 + 6, 0, W-1), y1, W, y2))
 
     # 주소: 바로 다음 줄(이름 아래)
     ya = _clamp(py + int(line_h*1.2), 0, H-1)
@@ -110,43 +112,50 @@ def _rois_from_anchor(img: Image.Image, ax: float, ay: float) -> Tuple[Image.Ima
     return name_roi, phone_roi, addr_roi
 
 # -------- 추출 --------
-def _extract(img: Image.Image, anchor: Optional[Tuple[float,float]]) -> Tuple[str,str,str]:
+def _pick_first_phone(line: str) -> str:
+    """왼→오른쪽 순서 기준 첫 번째 일치 반환"""
+    best = None
+    for pat in (R_PHONE_010, R_PHONE_05A, R_PHONE_05B):
+        for m in pat.finditer(line):
+            s = m.group(0)
+            idx = m.start()
+            if s == "010-7394-3535":  # 금지
+                continue
+            if (best is None) or (idx < best[0]):
+                best = (idx, s)
+            break  # 같은 패턴에서 첫 일치만 본다
+    return best[1] if best else ""
+
+def _extract(img: Image.Image, anchor):
     if img is None or anchor is None:
         return "", "", ""
     ax, ay = anchor
     name_roi, phone_roi, addr_roi = _rois_from_anchor(img, ax, ay)
 
-    # 이름: 한글 2~5자만, 라벨 제거, 금지어 제외
+    # 이름: 한글 2~4자, 라벨 제거, 금지어 제외
     name_raw = _tess_line(_preprocess(name_roi, False), "kor")
     if len(re.sub(r"\s+","",name_raw)) < 2:
         name_raw = _tess_line(_preprocess(name_roi, True), "kor")
-    name_tokens = re.findall(r"[가-힣]{2,}", LABEL_NAME.sub("", name_raw))
+    tokens = re.findall(r"[가-힣]{2,}", LABEL_NAME.sub("", name_raw))
     name = ""
-    for t in name_tokens:
+    for t in tokens:
         if t in STOP_WORDS: continue
-        name = t[:5]  # 최대 5자
+        name = t[:4]  # 최대 4자
         break
 
-    # 전화: 같은 줄 오른쪽, 첫 일치
-    phone_raw = _tess_line(_preprocess(phone_roi, False), "eng", allowlist="0123456789-*")
-    if len(re.sub(r"\s+","",phone_raw)) < 5:
-        phone_raw = _tess_line(_preprocess(phone_roi, True), "eng", allowlist="0123456789-*")
-    phone = ""
-    m1 = R_PHONE_010.search(phone_raw)
-    if m1:
-        phone = m1.group(0)
-        if phone == "010-7394-3535": phone = ""
-    if not phone:
-        m2 = R_PHONE_05.search(phone_raw)
-        if m2: phone = m2.group(0)
+    # 전화: 같은 줄 오른쪽, 라인 OCR 후 왼→오 첫 일치
+    phone_line = _tess_line(_preprocess(phone_roi, False), "eng", allowlist="0123456789-*")
+    if len(re.sub(r"\s+","",phone_line)) < 5:
+        phone_line = _tess_line(_preprocess(phone_roi, True), "eng", allowlist="0123456789-*")
+    phone = _pick_first_phone(phone_line)
 
     # 주소: 다음 줄, 앞부분만
-    addr_raw = _tess_line(_preprocess(addr_roi, False), "kor")
-    if len(re.sub(r"\s+","",addr_raw)) < 4:
-        addr_raw = _tess_line(_preprocess(addr_roi, True), "kor")
-    addr = _address_prefix(addr_raw, 30)
+    addr_line = _tess_line(_preprocess(addr_roi, False), "kor")
+    if len(re.sub(r"\s+","",addr_line)) < 4:
+        addr_line = _tess_line(_preprocess(addr_roi, True), "kor")
+    address = _address_prefix(addr_line, 30)
 
-    return addr, name, phone
+    return address, name, phone
 
 # -------- QR → 모델/기기 --------
 def _map_model_device(qr_text:str)->Tuple[str,str]:
@@ -174,7 +183,7 @@ def _final(qr_text:str, address:str, name:str, phone:str)->Dict[str,str]:
 def _yellow_crop_and_anchor(im: Image.Image, anchor: Optional[Tuple[float,float]]):
     bbox = _find_yellow_block(im)
     if not bbox:
-        return im, anchor  # 노란영역 못찾으면 전체에서 그대로
+        return im, anchor  # 노란영역 없음 → 전체에서 처리
     x,y,w,h = bbox
     yimg = im.crop((x,y,x+w,y+h))
     if anchor is None:
@@ -185,7 +194,6 @@ def _yellow_crop_and_anchor(im: Image.Image, anchor: Optional[Tuple[float,float]
     if x <= px <= x+w and y <= py <= y+h:
         rel = ((px - x)/float(w), (py - y)/float(h))
         return yimg, rel
-    # 탭이 노란영역 밖이면 전체 이미지 기준으로 처리
     return im, anchor
 
 def make_final_entry_fast(qr_text:str, img_path:str, anchor: Optional[Tuple[float,float]]=None)->Dict[str,str]:
@@ -208,6 +216,7 @@ def make_final_entry(qr_text:str, img_path:str, anchor: Optional[Tuple[float,flo
         name = name or name2
         phone = phone or phone2
     return _final(qr_text, addr, name, phone)
+
 
 
 
