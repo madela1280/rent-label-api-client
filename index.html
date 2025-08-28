@@ -9,14 +9,21 @@
   <style>
     :root { color-scheme: light dark; }
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Apple SD Gothic Neo,Noto Sans KR;margin:0;padding:16px;background:#fff;color:#111827}
-    header{font-weight:800;font-size:22px;margin:4px 0 12px}
-    .card{border:1px solid #e5e7eb;border-radius:12px;padding:16px}
+    header{font-weight:800;font-size:28px;margin:4px 0 16px}
+    .card{border:1px solid #e5e7eb;border-radius:16px;padding:16px}
     button{padding:12px 16px;border-radius:12px;border:0;background:#111827;color:#fff;font-weight:700}
-    video,canvas{width:100%;border:1px solid #e5e7eb;border-radius:10px;background:#000}
+    video,canvas{width:100%;border:1px solid #e5e7eb;border-radius:12px;background:#000}
     #preview,#snapshot{width:100%;aspect-ratio:16/7;object-fit:cover}
     .muted{opacity:.7}
-    #hint{display:none!important} /* 프리뷰/보강 문구 항상 숨김 */
-    #tapDot{position:fixed;width:18px;height:18px;border-radius:50%;border:2px solid #10b981;pointer-events:none;z-index:3;display:none;box-shadow:0 0 0 2px rgba(16,185,129,.2)}
+    #hint{display:none!important}
+    .dot{position:fixed;width:18px;height:18px;border-radius:50%;pointer-events:none;z-index:3;display:none}
+    #dotName{border:2px solid #10b981;box-shadow:0 0 0 2px rgba(16,185,129,.2)}
+    #dotPhone{border:2px solid #3b82f6;box-shadow:0 0 0 2px rgba(59,130,246,.2)}
+    #dotAddr{border:2px solid #f59e0b;box-shadow:0 0 0 2px rgba(245,158,11,.2)}
+    .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+    .chip{padding:6px 10px;border-radius:999px;border:1px solid #e5e7eb;font-size:12px;background:#f9fafb}
+    .ok{background:#ecfdf5;border-color:#10b981;color:#065f46;font-weight:700}
+    .warn{background:#fff7ed;border-color:#f59e0b;color:#7c2d12}
   </style>
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 </head>
@@ -25,9 +32,17 @@
 
   <div class="card">
     <video id="preview" autoplay playsinline muted></video>
-    <div class="muted" style="font-size:12px;margin-top:6px">이름 줄을 화면에서 <b>톡! 탭</b>하면 촬영됩니다.</div>
+    <div class="muted" style="font-size:12px;margin-top:8px">
+      노란 라벨 위에서 <b>이름 → 전화번호 → 주소 시작</b> 순서로 화면을 탭해 점을 찍은 뒤, <b>사진 촬영</b>을 누르세요.
+    </div>
+    <div class="chips" id="chipRow">
+      <div class="chip" id="chipName">이름 미지정</div>
+      <div class="chip" id="chipPhone">전화 미지정</div>
+      <div class="chip" id="chipAddr">주소 미지정</div>
+      <button id="resetBtn" class="chip warn" style="margin-left:auto">재지정</button>
+    </div>
     <br/>
-    <button id="captureBtn">사진 촬영 (버튼)</button>
+    <button id="captureBtn" disabled>사진 촬영</button>
 
     <canvas id="snapshot" style="display:none;margin-top:12px;"></canvas>
 
@@ -45,10 +60,12 @@
     </div>
   </div>
 
-  <div id="tapDot"></div>
+  <div id="dotName" class="dot"></div>
+  <div id="dotPhone" class="dot"></div>
+  <div id="dotAddr" class="dot"></div>
 
 <script>
-const APP_VER  = "2025-08-27-anchor-v4";
+const APP_VER  = "2025-08-28-triple-anchor";
 const API_BASE = ""; // 같은 오리진
 
 /* SW 강제 최신화 */
@@ -66,7 +83,7 @@ if ('serviceWorker' in navigator) {
 }
 
 /* fetch 유틸 */
-async function fetchWithTimeout(url, {timeoutMs=30000, retry=0, ...options}={}){
+async function fetchWithTimeout(url, {timeoutMs=30000, retry=0, ...options}={}) {
   const ctrl = new AbortController();
   const t = setTimeout(()=>ctrl.abort(), timeoutMs);
   try {
@@ -77,6 +94,7 @@ async function fetchWithTimeout(url, {timeoutMs=30000, retry=0, ...options}={}){
     throw e;
   } finally { clearTimeout(t); }
 }
+
 function warmBackend(){ fetchWithTimeout(`${API_BASE}/__ping`, {timeoutMs:5000}).catch(()=>{}); }
 warmBackend();
 
@@ -84,20 +102,25 @@ warmBackend();
 const video   = document.getElementById('preview');
 const canvas  = document.getElementById('snapshot');
 const ctx     = canvas.getContext('2d', { willReadFrequently: true });
-
 const r_shipDate = document.getElementById('r_shipDate');
 const r_name     = document.getElementById('r_name');
 const r_phone    = document.getElementById('r_phone');
 const r_addr     = document.getElementById('r_addr');
 const r_model    = document.getElementById('r_model');
 const r_deviceId = document.getElementById('r_deviceId');
-const hint       = document.getElementById('hint');
-const tapDot     = document.getElementById('tapDot');
+
+const dotName  = document.getElementById('dotName');
+const dotPhone = document.getElementById('dotPhone');
+const dotAddr  = document.getElementById('dotAddr');
+const chipName = document.getElementById('chipName');
+const chipPhone= document.getElementById('chipPhone');
+const chipAddr = document.getElementById('chipAddr');
+const resetBtn = document.getElementById('resetBtn');
+const captureBtn = document.getElementById('captureBtn');
 
 let __stream = null;
 let ocrPreview = null;
 let ocrRunning = false;
-let anchorNorm = null; // {x:0..1, y:0..1} — 비디오 프레임 기준
 
 /* 카메라 */
 async function stopCamera(){
@@ -134,8 +157,8 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) stopC
 window.addEventListener('beforeunload', () => { stopCamera(); });
 
 /* 유틸 */
-function clamp(v, min, max){ return Math.max(min, Math.min(max, v)); }
-function parseModelDevice(raw) {
+function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
+function parseModelDevice(raw){
   const original = (raw || '').toString().trim();
   const u = original.toUpperCase().replace(/[^A-Z0-9]/g,'');
   const MAP = { SM:'심포니', LT:'락티나', S:'스윙', M:'스윙맥스', F:'프리스타일', G:'각시밀', C:'시밀레' };
@@ -187,48 +210,72 @@ function canvasToBlobResized(fromCanvas, cb) {
     fromCanvas.toBlob(cb, 'image/jpeg', 0.6);
   }
 }
-
-/* 초기 카메라 */
-initCamera();
-
-/* ----- 탭=앵커+촬영 ----- */
-function showTapDot(x, y){
-  tapDot.style.left = (x-9) + 'px';
-  tapDot.style.top  = (y-9) + 'px';
-  tapDot.style.display = 'block';
-  setTimeout(()=>{ tapDot.style.display='none'; }, 700);
+function updateChips(a){
+  const done = (p, el, okText, noText) => {
+    if (p){ el.classList.add('ok'); el.textContent = okText; }
+    else { el.classList.remove('ok'); el.textContent = noText; }
+  };
+  done(a.name, chipName, "이름 지정됨", "이름 미지정");
+  done(a.phone, chipPhone, "전화 지정됨", "전화 미지정");
+  done(a.addr, chipAddr, "주소 지정됨", "주소 미지정");
+  captureBtn.disabled = !(a.name && a.phone && a.addr);
 }
+
+/* 앵커 저장 */
+const anchors = { name:null, phone:null, addr:null }; // {x:0..1, y:0..1}
 function mapClickToVideoFrame(ev){
   const rect = video.getBoundingClientRect();
   const cx = ev.clientX - rect.left;
   const cy = ev.clientY - rect.top;
-
-  // object-fit:cover 보정
   const vw = video.videoWidth || rect.width;
   const vh = video.videoHeight || rect.height;
   const s = Math.max(rect.width / vw, rect.height / vh);
   const dispW = vw * s, dispH = vh * s;
   const offX = (dispW - rect.width)/2;
   const offY = (dispH - rect.height)/2;
-
   const sx = (cx + offX) / s;
   const sy = (cy + offY) / s;
-
   const ax = clamp(sx / vw, 0, 1);
   const ay = clamp(sy / vh, 0, 1);
-  return { ax, ay, client: {x: ev.clientX, y: ev.clientY} };
+  return { ax, ay, client:{x:ev.clientX, y:ev.clientY} };
 }
+function placeDot(dotEl, pt){
+  dotEl.style.left = (pt.x-9) + 'px';
+  dotEl.style.top  = (pt.y-9) + 'px';
+  dotEl.style.display = 'block';
+}
+function clearAnchors(){
+  anchors.name = anchors.phone = anchors.addr = null;
+  dotName.style.display = dotPhone.style.display = dotAddr.style.display = 'none';
+  updateChips(anchors);
+}
+resetBtn.addEventListener('click', clearAnchors);
 
 video.addEventListener('click', (ev) => {
   const m = mapClickToVideoFrame(ev);
-  anchorNorm = { x: m.ax, y: m.ay };
-  showTapDot(m.client.x, m.client.y);
-  doCapture(); // 탭하면 즉시 촬영
+  if (!anchors.name){
+    anchors.name = {x:m.ax, y:m.ay}; placeDot(dotName, m.client);
+  } else if (!anchors.phone){
+    anchors.phone = {x:m.ax, y:m.ay}; placeDot(dotPhone, m.client);
+  } else if (!anchors.addr){
+    anchors.addr = {x:m.ax, y:m.ay}; placeDot(dotAddr, m.client);
+  } else {
+    // 모두 지정된 상태 → 재지정 유도
+    alert('이미 3개가 모두 지정되었습니다. [재지정]을 눌러 초기화하세요.');
+    return;
+  }
+  updateChips(anchors);
 });
 
-/* 촬영 버튼도 유지(앵커 없으면 null) */
+/* 초기 카메라 */
+initCamera();
+
+/* 촬영 */
 document.getElementById('captureBtn').addEventListener('click', () => {
-  anchorNorm = null;
+  if (!(anchors.name && anchors.phone && anchors.addr)) {
+    alert('이름→전화→주소 순서로 3곳을 먼저 탭해 주세요.');
+    return;
+  }
   doCapture();
 });
 
@@ -236,9 +283,15 @@ function doCapture(){
   const w = video.videoWidth, h = video.videoHeight;
   if (!w || !h) return alert('카메라 초기화 대기 후 다시 시도');
 
+  // 미리보기 캔버스(배지 용)
   canvas.width = w; canvas.height = h;
   ctx.drawImage(video, 0, 0, w, h);
   canvas.style.display = 'block';
+
+  // OCR용 원본 캔버스(배지 없음)
+  const ocrCanvas = document.createElement('canvas');
+  ocrCanvas.width = w; ocrCanvas.height = h;
+  ocrCanvas.getContext('2d', { willReadFrequently: true }).drawImage(video, 0, 0, w, h);
 
   const { text:qr, loc } = scanQRFromCanvas();
   const md = parseModelDevice(qr);
@@ -264,40 +317,39 @@ function doCapture(){
   if (ocrRunning) return;
   ocrRunning = true;
 
-canvasToBlobResized(canvas, async (blob) => {
-  const fdFull = new FormData();
-  fdFull.append('image', blob, 'f.jpg');
-  fdFull.append('qr_text', qr || '');
-  if (anchorNorm){
-    fdFull.append('anchor_x', String(anchorNorm.x));
-    fdFull.append('anchor_y', String(anchorNorm.y));
-  }
-  try {
-    const r = await fetchWithTimeout(`${API_BASE}/process-ocr/`, { method:'POST', body: fdFull, timeoutMs:45000, retry:0 });
-    if (!r.ok) {
-      const msg = await r.text().catch(()=>r.statusText);
-      alert('인식 실패: ' + msg);
-      return;
+  canvasToBlobResized(ocrCanvas, async (blob) => {
+    const fd = new FormData();
+    fd.append('image', blob, 'f.jpg');
+    fd.append('qr_text', qr || '');
+    // 삼점 앵커 전달
+    fd.append('name_x', String(anchors.name.x));  fd.append('name_y', String(anchors.name.y));
+    fd.append('phone_x', String(anchors.phone.x));fd.append('phone_y', String(anchors.phone.y));
+    fd.append('addr_x', String(anchors.addr.x));  fd.append('addr_y', String(anchors.addr.y));
+    try {
+      const r = await fetchWithTimeout(`${API_BASE}/process-ocr/`, { method:'POST', body: fd, timeoutMs:45000, retry:0 });
+      if (!r.ok) {
+        const msg = await r.text().catch(()=>r.statusText);
+        alert('인식 실패: ' + msg);
+        return;
+      }
+      const j = await r.json().catch(()=>null);
+      if (!j || !j.data) { alert('인식 실패: 결과가 비어 있습니다.'); return; }
+      const d = j.data;
+      ocrPreview = {
+        ...ocrPreview,
+        "출고일":  d['출고일']   || ocrPreview['출고일'],
+        "대여자명": d['대여자명'] || "-",
+        "전화번호": d['전화번호'] || "-",
+        "주소":     d['주소']     || "-",
+      };
+      populatePanel(ocrPreview);
+    } catch(e){
+      alert('인식 네트워크 오류: ' + (e?.message || e));
+    } finally {
+      ocrRunning = false;
     }
-    const j = await r.json().catch(()=>null);
-    if (!j || !j.data) { alert('인식 실패: 결과가 비어 있습니다.'); return; }
-    const d = j.data;
-    ocrPreview = {
-      ...ocrPreview,
-      "출고일":  d['출고일']   || ocrPreview['출고일'],
-      "대여자명": d['대여자명'] || "-",
-      "전화번호": d['전화번호'] || "-",
-      "주소":     d['주소']     || "-",
-    };
-    populatePanel(ocrPreview);
-  } catch (e) {
-    alert('인식 네트워크 오류: ' + (e?.message || e));
-  } finally {
-    ocrRunning = false;
-  }
-}); // canvasToBlobResized 콜백 닫힘
-
-} // doCapture() 닫힘
+  });
+}
 
 /* 확인(엑셀 저장 + 사진저장) */
 document.getElementById('confirmBtn').addEventListener('click', async () => {
@@ -314,8 +366,8 @@ document.getElementById('confirmBtn').addEventListener('click', async () => {
     a.click();
   }, 'image/jpeg', 0.7);
 
-  try {
-    const res = await fetchWithTimeout(`${API_BASE}/save-result`, {
+  try{
+    const res = await fetchWithTimeout(`${API_BASE}/save-result`,{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify(ocrPreview),
@@ -335,12 +387,12 @@ document.getElementById('confirmBtn').addEventListener('click', async () => {
     } else {
       alert('저장 실패: ' + (txt || res.statusText));
     }
-  } catch (e) {
+  } catch(e){
     alert('서버 전송 실패: ' + e.message);
   } finally {
     btn.disabled = false;
   }
-}); // confirmBtn 클릭 핸들러 닫힘
+});
 </script>
 </body>
 </html>

@@ -1,4 +1,4 @@
-import os, shutil, uuid, time, requests
+import os, shutil, uuid, requests
 from dotenv import load_dotenv; load_dotenv()
 
 from fastapi import FastAPI, Request, UploadFile, Form, File, Body
@@ -12,7 +12,7 @@ from uuid import uuid4
 from ocr_utils import make_final_entry, make_final_entry_fast
 
 _HTTP = requests.Session()
-APP_VERSION = os.getenv("APP_VERSION", "2025-08-27-stable")
+APP_VERSION = os.getenv("APP_VERSION", "2025-08-28-triple-anchor")
 
 # ------------------------------- FastAPI & Session -------------------------------
 app = FastAPI()
@@ -34,14 +34,13 @@ app.add_middleware(
 CLIENT_ID     = os.getenv("CLIENT_ID")
 TENANT_ID     = os.getenv("TENANT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-
 SCOPES = ["User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All"]
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 GRAPH     = "https://graph.microsoft.com/v1.0"
 
 FILE_NAME  = os.getenv("FILE_NAME", "유축기출고.xlsx")
 SHEET_NAME = os.getenv("WORKSHEET_NAME", "유축기출고")
-TABLE_NAME = os.getenv("TABLE_NAME", "출고내역")  # 있으면 rows/add, 없으면 range 패치
+TABLE_NAME = os.getenv("TABLE_NAME", "출고내역")
 
 # ------------------------------- MSAL helpers -------------------------------
 def _build_msal_app():
@@ -115,7 +114,6 @@ def _write_row_table(token: str, row: list) -> requests.Response:
 
 def _write_row_range(token: str, row: list) -> requests.Response:
     _ensure_session(token)
-    # usedRange로 마지막 행 계산 → 다음 행 A..F 패치
     used = _HTTP.get(
         f"{GRAPH}/me/drive/items/{_get_drive_item_id(token)}/workbook/worksheets('{SHEET_NAME}')/usedRange",
         headers=_headers(token), timeout=30
@@ -132,22 +130,15 @@ def _write_row_range(token: str, row: list) -> requests.Response:
     return _HTTP.patch(url, headers=_headers(token), json={"values":[row]}, timeout=60)
 
 def write_row_to_onedrive(row: list, token: Optional[str]=None) -> (bool, Dict[str,Any]):
-    """
-    1) 테이블 '출고내역' rows/add 시도
-    2) 없으면 usedRange 기반 A..F 패치로 폴백
-    반환: (ok, info|error)
-    """
     tok = token or _get_access_token()
     if not tok:
         return False, {"error":"no_access_token"}
 
-    # 테이블 우선
     try:
         r = _write_row_table(tok, row)
         if r.status_code in (200, 201):
             return True, {"mode":"table","status":r.status_code}
         if r.status_code in (404, 400):
-            # 테이블 없거나 잘못됨 → 폴백
             r2 = _write_row_range(tok, row)
             if r2.status_code == 200:
                 return True, {"mode":"range","status":200}
@@ -165,7 +156,6 @@ def write_row_to_onedrive(row: list, token: Optional[str]=None) -> (bool, Dict[s
 
 # ------------------------------- Auth Routes -------------------------------
 def _redirect_uri(request: Request) -> str:
-    # 현재 요청 기준으로 콜백 URI 생성 (http→https 강제)
     uri = str(request.url_for("callback"))
     if uri.startswith("http://"):
         uri = "https://" + uri[len("http://"):]
@@ -202,42 +192,47 @@ async def callback(request: Request):
 @app.post("/preview-ocr")
 async def preview_ocr(
     qr_text: str = Form(""),
-    anchor_x: float = Form(None),
-    anchor_y: float = Form(None),
+    name_x: float = Form(None), name_y: float = Form(None),
+    phone_x: float = Form(None), phone_y: float = Form(None),
+    addr_x: float = Form(None), addr_y: float = Form(None),
     image: UploadFile = File(...),
 ):
     p = f"temp_{image.filename}"
     with open(p, "wb") as f:
         shutil.copyfileobj(image.file, f)
     try:
-        anchor = (anchor_x, anchor_y) if (anchor_x is not None and anchor_y is not None) else None
-        result = make_final_entry_fast(qr_text, p, anchor=anchor)
+        anchors = {}
+        if name_x is not None and name_y is not None:   anchors["name"]  = (name_x, name_y)
+        if phone_x is not None and phone_y is not None: anchors["phone"] = (phone_x, phone_y)
+        if addr_x is not None and addr_y is not None:   anchors["addr"]  = (addr_x, addr_y)
+        result = make_final_entry_fast(qr_text, p, anchors=anchors or None)
         return {"status": "preview", "data": result}
     finally:
-        if os.path.exists(p):
-            os.remove(p)
+        if os.path.exists(p): os.remove(p)
 
 @app.post("/process-ocr/")
 async def process_ocr(
     qr_text: str = Form(""),
-    anchor_x: float = Form(None),
-    anchor_y: float = Form(None),
+    name_x: float = Form(None), name_y: float = Form(None),
+    phone_x: float = Form(None), phone_y: float = Form(None),
+    addr_x: float = Form(None), addr_y: float = Form(None),
     image: UploadFile = File(...),
 ):
     p = f"temp_{image.filename}"
     with open(p, "wb") as f:
         shutil.copyfileobj(image.file, f)
     try:
-        anchor = (anchor_x, anchor_y) if (anchor_x is not None and anchor_y is not None) else None
-        result = make_final_entry(qr_text, p, anchor=anchor)
+        anchors = {}
+        if name_x is not None and name_y is not None:   anchors["name"]  = (name_x, name_y)
+        if phone_x is not None and phone_y is not None: anchors["phone"] = (phone_x, phone_y)
+        if addr_x is not None and addr_y is not None:   anchors["addr"]  = (addr_x, addr_y)
+        result = make_final_entry(qr_text, p, anchors=anchors or None)
         return {"status": "ok", "data": result}
     finally:
-        if os.path.exists(p):
-            os.remove(p)
+        if os.path.exists(p): os.remove(p)
 
 @app.post("/save-result")
 def save_result(data: Dict[str, Any] = Body(...)):
-    # 행 구성 (A..F)
     row = [
         data.get("출고일",""),
         data.get("대여자명",""),
@@ -246,7 +241,6 @@ def save_result(data: Dict[str, Any] = Body(...)):
         data.get("기기번호",""),
         data.get("기종",""),
     ]
-
     token = _get_access_token()
     if not token:
         return JSONResponse({"status":"write_failed","write_error":{"error":"no_access_token"}}, status_code=401)
@@ -255,14 +249,12 @@ def save_result(data: Dict[str, Any] = Body(...)):
     if ok:
         return {"status":"success","write_info":info}
 
-    # 401 → 토큰 강제 리프레시 후 1회 재시도
     if info.get("error") in ("unauthorized",) or info.get("status") == 401:
         token2 = _get_access_token(force_refresh=True)
         if not token2:
             return JSONResponse({"status":"write_failed","write_error":{"error":"no_access_token"}}, status_code=401)
         ok2, info2 = write_row_to_onedrive(row, token=token2)
-        if ok2:
-            return {"status":"success","write_info":info2}
+        if ok2: return {"status":"success","write_info":info2}
         return JSONResponse({"status":"write_failed","write_error":info2}, status_code=500)
 
     return JSONResponse({"status":"write_failed","write_error":info}, status_code=500)
@@ -297,6 +289,7 @@ def __reset_tokens():
 if __name__=="__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT",10000)))
+
 
 
 
