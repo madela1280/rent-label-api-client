@@ -58,7 +58,7 @@ def _post_clova(img_bytes: bytes) -> Dict[str, Any]:
     r.raise_for_status()
     return r.json()
 
-def _group_lines(fields: List[Dict[str, Any]], y_tol: int = 12) -> List[List[Dict[str, Any]]]:
+def _group_lines(fields: List[Dict[str, Any]], y_tol: int = 16) -> List[List[Dict[str, Any]]]:
     """bbox 중심 y 기준으로 라인 묶기"""
     items = []
     for f in fields:
@@ -178,8 +178,8 @@ def _prepare_roi(path: str, anchor: Optional[Tuple[float,float]]) -> Tuple[Image
     y = int(_clamp(ay, 0, 1) * h)
 
     # 노란 영역에 맞춰 상하 폭을 좁게 잡는다 (아래쪽을 더 많이 포함)
-    top  = _clamp(y - int(h*0.14), 0, h-1)
-    bot  = _clamp(y + int(h*0.24), top+1, h)
+    top  = _clamp(y - int(h*0.12), 0, h-1)
+    bot  = _clamp(y + int(h*0.28), top+1, h)
     roi  = im.crop((0, top, w, bot))
     return roi, (y - top)
 
